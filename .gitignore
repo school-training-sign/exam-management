@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env*
+!public/assets/config.js
+qa/source/
+qa/compare-*.jpg
+qa/prototype/*before-fix*.jpg

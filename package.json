@@ -1,0 +1,22 @@
+{
+  "name": "exam-management",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test",
+    "check": "node tests/static-check.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-serif-kr": "^5.2.10",
+    "@fontsource/pretendard": "^5.2.5",
+    "@tabler/icons-react": "^3.45.0",
+    "@vitejs/plugin-react": "5.0.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "vite": "6.4.2"
+  }
+}
