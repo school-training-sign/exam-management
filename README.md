@@ -36,6 +36,8 @@ pnpm check
 pnpm build
 ```
 
+GitHub Pages는 검증된 `dist` 결과를 `gh-pages` 브랜치에 게시하는 방식으로 운영합니다.
+
 ## 오픈소스
 
 - React, Vite
