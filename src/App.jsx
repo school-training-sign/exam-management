@@ -32,6 +32,7 @@ import {
   analyzeManualSeatRows,
   analyzeStudentRows,
   buildPersonalTimetable,
+  buildSeatSlots,
   classLabel,
   formatKoreanDate,
   formatPresenceLabel,
@@ -864,6 +865,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
   const [rows, setRows] = useState(6);
   const [cols, setCols] = useState(5);
   const [startSide, setStartSide] = useState("window");
+  const [seatOrder, setSeatOrder] = useState("row");
   const [roomName, setRoomName] = useState("");
   const [disabledSeats, setDisabledSeats] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -915,6 +917,13 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       });
     return [...options];
   }, [bootstrap.enrollments, grade, subjectName, selectedTimetable, mode, selectedClass]);
+  const seatSequenceMap = useMemo(
+    () => new Map(
+      buildSeatSlots(rows, cols, startSide, disabledSeats, seatOrder)
+        .map((slot, index) => [slot.key, index + 1]),
+    ),
+    [rows, cols, startSide, disabledSeats, seatOrder],
+  );
 
   const defaultExamineeIds = useMemo(() => {
     if (!selectedTimetable) return mode === "own" ? students.map((item) => item.id) : [];
@@ -1030,6 +1039,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       rows,
       cols,
       startSide,
+      seatOrder,
       disabledSeats,
       mode,
       selectedIds,
@@ -1073,10 +1083,12 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       rows,
       cols,
       start_side: startSide,
+      seat_order: seatOrder,
       disabled_seats: disabledSeats,
       examinee_ids: selectedIds,
       assignment: result.assignments.map((item) => ({
         key: item.key,
+        sequence: item.sequence,
         student_id: item.student?.id || "",
         absent: item.absent,
       })),
@@ -1119,6 +1131,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
     setRows(Number(chart.rows || 6));
     setCols(Number(chart.cols || 5));
     setStartSide(chart.start_side || "window");
+    setSeatOrder(chart.seat_order === "column" ? "column" : "row");
     setDisabledSeats(chart.disabled_seats || []);
     setSelectedIds(chart.examinee_ids || []);
     const studentMap = new Map(bootstrap.students.map((item) => [String(item.id), item]));
@@ -1232,6 +1245,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         rows,
         cols,
         startSide,
+        seatOrder,
         disabledSeats,
         mode: "separate",
         selectedIds: group.students.map((item) => item.id),
@@ -1252,10 +1266,12 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         rows,
         cols,
         start_side: startSide,
+        seat_order: seatOrder,
         disabled_seats: disabledSeats,
         examinee_ids: group.students.map((item) => item.id),
         assignment: generated.assignments.map((item) => ({
           key: item.key,
+          sequence: item.sequence,
           student_id: item.student?.id || "",
           absent: item.absent,
         })),
@@ -1322,13 +1338,15 @@ function SeatPanel({ bootstrap, onBootstrap }) {
               <label>열<input type="number" min="1" max="12" value={cols} onChange={(event) => { invalidateSeatResult(); setCols(Number(event.target.value)); }} /></label>
               <label>시작<select value={startSide} onChange={(event) => { invalidateSeatResult(); setStartSide(event.target.value); }}><option value="window">창가</option><option value="aisle">복도</option></select></label>
             </div>
-            <p className="field-help">Enter·Space로 좌석을 제외하고 방향키로 좌석 사이를 이동할 수 있습니다.</p>
+            <label>배치 순서<select value={seatOrder} onChange={(event) => { invalidateSeatResult(); setSeatOrder(event.target.value); }}><option value="row">가로 순번 · 행 우선 (→)</option><option value="column">세로 순번 · 열 우선 (↓)</option></select></label>
+            <p className="field-help">{seatOrder === "column" ? "한 열을 칠판 쪽부터 채운 뒤 다음 열로 이동합니다." : "한 행을 창가·복도 방향으로 채운 뒤 다음 행으로 이동합니다."} Enter·Space로 좌석을 제외하고 방향키로 이동할 수 있습니다.</p>
             <div ref={seatEditorRef} className="mini-seat-grid" style={{ "--seat-cols": cols }}>
               {Array.from({ length: rows * cols }, (_, index) => {
                 const row = Math.floor(index / cols);
                 const col = index % cols;
                 const key = `${row}-${col}`;
-                return <button type="button" data-seat-index={index} key={key} className={disabledSeats.includes(key) ? "disabled" : ""} onKeyDown={(event) => moveSeatFocus(event, index)} onClick={() => toggleSeat(key)} aria-pressed={disabledSeats.includes(key)} aria-label={`${row + 1}행 ${col + 1}열 ${disabledSeats.includes(key) ? "복원" : "제외"}`}>{disabledSeats.includes(key) ? <IconX size={13} /> : index + 1}</button>;
+                const sequence = seatSequenceMap.get(key);
+                return <button type="button" data-seat-index={index} key={key} className={disabledSeats.includes(key) ? "disabled" : ""} onKeyDown={(event) => moveSeatFocus(event, index)} onClick={() => toggleSeat(key)} aria-pressed={disabledSeats.includes(key)} aria-label={`${row + 1}행 ${col + 1}열 ${disabledSeats.includes(key) ? "복원" : `배치 ${sequence}번 · 제외`}`}>{disabledSeats.includes(key) ? <IconX size={13} /> : sequence}</button>;
               })}
             </div>
           </div>
@@ -1347,7 +1365,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
           <div className="seat-title">
             <p>{formatKoreanDate(examDate)} · {period}교시</p>
             <h3>{subjectName || "과목 미지정"} · {roomName || "호실 미지정"}</h3>
-            <span>{scopeLabel} · 응시 {selectedIds.length}명 · {rows}행×{cols}열</span>
+            <span>{scopeLabel} · 응시 {selectedIds.length}명 · {rows}행×{cols}열 · {seatOrder === "column" ? "세로 순번" : "가로 순번"}</span>
           </div>
           <div className="room-orientation"><span className={startSide === "window" ? "active" : ""}>창가</span><strong>칠판 · 교탁</strong><span className={startSide === "aisle" ? "active" : ""}>복도</span></div>
           {result.assignments.length ? (
@@ -1361,7 +1379,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
                 const studentClass = item?.student ? classMap.get(String(item.student.class_id)) : null;
                 return (
                   <div className={`seat ${item?.absent ? "seat-absent" : ""} ${!item?.student ? "seat-empty" : ""}`} key={key}>
-                    <span>{row + 1}-{col + 1}</span>
+                    <span>{item?.sequence || seatSequenceMap.get(key)}번 · {row + 1}행 {col + 1}열</span>
                     {item?.student ? <><strong>{mode === "separate" && studentClass ? `${studentClass.class_num}반 ` : ""}{item.student.number}번 {item.student.name}</strong>{item.absent ? <em>결시 · 자리 유지</em> : !item.selected && mode === "own" ? <small>미응시</small> : null}</> : <small>빈 좌석</small>}
                   </div>
                 );
@@ -1375,7 +1393,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       <article className="panel-card saved-charts no-print">
         <div className="card-heading"><div><IconDeviceFloppy size={20} /><h3>저장된 자리배치</h3></div><span>{bootstrap.seat_charts.length}개</span></div>
         {bootstrap.seat_charts.length ? <div className="saved-list">{bootstrap.seat_charts.map((chart) => (
-          <div key={chart.id}><div><strong>{chart.subject_name || "과목 미지정"} · {chart.room_name}</strong><span>{chart.exam_date} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label={`${chart.room_name} 자리배치 삭제`}><IconTrash size={17} /></button></div></div>
+          <div key={chart.id}><div><strong>{chart.subject_name || "과목 미지정"} · {chart.room_name}</strong><span>{chart.exam_date} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`} · {chart.seat_order === "column" ? "세로 순번" : "가로 순번"}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label={`${chart.room_name} 자리배치 삭제`}><IconTrash size={17} /></button></div></div>
         ))}</div> : <EmptyState icon={IconDeviceFloppy} title="저장된 배치가 없습니다" description="같은 고사·과목·호실 조합은 중복 없이 최신 배치로 저장됩니다." />}
       </article>
     </section>

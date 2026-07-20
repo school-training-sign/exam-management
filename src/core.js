@@ -299,18 +299,32 @@ export function completionKey({ exam_date, period, class_id }) {
   return `${exam_date}|${Number(period)}|${class_id}`;
 }
 
-export function buildSeatSlots(rows, cols, startSide = "window", disabledSeats = []) {
+export function buildSeatSlots(
+  rows,
+  cols,
+  startSide = "window",
+  disabledSeats = [],
+  seatOrder = "row",
+) {
   const safeRows = Math.min(12, Math.max(1, Number(rows) || 1));
   const safeCols = Math.min(12, Math.max(1, Number(cols) || 1));
-  const disabled = new Set(disabledSeats);
+  const disabled = new Set(disabledSeats.map(String));
   const columns = Array.from({ length: safeCols }, (_, index) => index);
+  const rowIndexes = Array.from({ length: safeRows }, (_, index) => index);
   if (startSide === "aisle") columns.reverse();
   const slots = [];
 
-  for (let row = 0; row < safeRows; row += 1) {
+  const append = (row, col) => {
+    const key = `${row}-${col}`;
+    if (!disabled.has(key)) slots.push({ key, row, col });
+  };
+  if (seatOrder === "column") {
     columns.forEach((col) => {
-      const key = `${row}-${col}`;
-      if (!disabled.has(key)) slots.push({ key, row, col });
+      rowIndexes.forEach((row) => append(row, col));
+    });
+  } else {
+    rowIndexes.forEach((row) => {
+      columns.forEach((col) => append(row, col));
     });
   }
   return slots;
@@ -321,6 +335,7 @@ export function generateSeatAssignment({
   rows = 6,
   cols = 5,
   startSide = "window",
+  seatOrder = "row",
   disabledSeats = [],
   mode = "separate",
   selectedIds = [],
@@ -336,7 +351,7 @@ export function generateSeatAssignment({
           ...sorted.filter((student) => !selected.has(String(student.id)) && !absent.has(String(student.id))),
         ]
       : sorted.filter((student) => selected.has(String(student.id)));
-  const slots = buildSeatSlots(rows, cols, startSide, disabledSeats);
+  const slots = buildSeatSlots(rows, cols, startSide, disabledSeats, seatOrder);
   if (queue.length > slots.length) {
     return {
       ok: false,
@@ -350,6 +365,7 @@ export function generateSeatAssignment({
     const student = queue[index] || null;
     return {
       ...slot,
+      sequence: index + 1,
       student,
       selected: Boolean(student && selected.has(String(student.id))),
       absent: Boolean(student && absent.has(String(student.id))),

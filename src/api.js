@@ -75,6 +75,9 @@ function validateDemoSeatChart(chart = {}) {
   if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 1 || cols < 1) {
     throw new ApiError("자리배치 행과 열을 확인하세요.", { code: "INVALID_SEAT_SIZE" });
   }
+  if (chart.seat_order && !["row", "column"].includes(String(chart.seat_order))) {
+    throw new ApiError("자리배치 순서를 확인하세요.", { code: "INVALID_SEAT_ORDER" });
+  }
 }
 
 function parseClassIds(value) {
