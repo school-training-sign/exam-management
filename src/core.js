@@ -1,4 +1,4 @@
-export const ABSENCE_REASONS = ["질병", "인정", "미인정", "기타"];
+export const ABSENCE_REASONS = ["인정", "미인정", "질병", "기타"];
 
 export function compactText(value, maxLength = 100) {
   return String(value ?? "")
@@ -92,7 +92,7 @@ export function normalizeEnrollmentRows(rows = []) {
   const seen = new Set();
   const result = [];
 
-  matrix.slice(hasHeader ? 1 : 0).forEach((row) => {
+  matrix.slice(hasHeader ? 1 : 0).forEach((row, index) => {
     const subject_name = compactText(row[indexes.subjectIndex], 80);
     const class_num = Number(row[indexes.classIndex]);
     const number = Number(row[indexes.numberIndex]);
@@ -105,7 +105,14 @@ export function normalizeEnrollmentRows(rows = []) {
     const key = `${subject_name}|${class_num}|${number}`;
     if (seen.has(key)) return;
     seen.add(key);
-    result.push({ subject_name, class_num, number, name, room_name });
+    result.push({
+      subject_name,
+      class_num,
+      number,
+      name,
+      room_name,
+      row_number: index + (hasHeader ? 2 : 1),
+    });
   });
 
   return result.sort(
@@ -140,6 +147,139 @@ export function normalizeManualSeatRows(rows = []) {
     result.push({ class_num, number, name });
   });
   return result.sort((left, right) => left.class_num - right.class_num || left.number - right.number);
+}
+
+function analyzeFixedRows(rows, columns, rowCode, duplicateCode, build, keyFor, sort) {
+  if (!Array.isArray(rows) || !rows.length) return { rows: [], errors: [] };
+  const matrix = rows.map((row) => (Array.isArray(row) ? row : Object.values(row)));
+  const header = matrix[0].map((value) => compactText(value, 40).replace(/\s/g, ""));
+  const indexes = Object.fromEntries(
+    columns.map(({ key, aliases }) => [key, headerIndex(header, aliases)]),
+  );
+  if (Object.values(indexes).some((index) => index < 0)) {
+    return { rows: [], errors: [{ row_number: 1, code: "INVALID_HEADERS" }] };
+  }
+
+  const seen = new Set();
+  const valid = [];
+  const errors = [];
+  matrix.slice(1).forEach((row, index) => {
+    if (row.every((value) => compactText(value, 10) === "")) return;
+    const rowNumber = index + 2;
+    const item = build(row, indexes, rowNumber);
+    if (!item) {
+      errors.push({ row_number: rowNumber, code: rowCode });
+      return;
+    }
+    const key = keyFor(item);
+    if (seen.has(key)) {
+      errors.push({ row_number: rowNumber, code: duplicateCode });
+      return;
+    }
+    seen.add(key);
+    valid.push(item);
+  });
+  return { rows: valid.sort(sort), errors };
+}
+
+export function analyzeStudentRows(rows = []) {
+  return analyzeFixedRows(
+    rows,
+    [
+      { key: "grade", aliases: ["학년"] },
+      { key: "classNum", aliases: ["반", "학급"] },
+      { key: "number", aliases: ["번호", "출석번호"] },
+      { key: "name", aliases: ["이름", "성명", "학생명"] },
+    ],
+    "INVALID_STUDENT_ROW",
+    "DUPLICATE_STUDENT_NUMBER",
+    (row, indexes) => {
+      const grade = Number(row[indexes.grade]);
+      const class_num = Number(row[indexes.classNum]);
+      const number = Number(row[indexes.number]);
+      const name = compactText(row[indexes.name], 50);
+      if (
+        !Number.isInteger(grade) ||
+        grade < 1 ||
+        grade > 9 ||
+        !Number.isInteger(class_num) ||
+        class_num < 1 ||
+        !Number.isInteger(number) ||
+        number < 1 ||
+        !name
+      ) return null;
+      return { grade, class_num, number, name };
+    },
+    (item) => `${item.grade}|${item.class_num}|${item.number}`,
+    (left, right) =>
+      left.grade - right.grade ||
+      left.class_num - right.class_num ||
+      left.number - right.number,
+  );
+}
+
+export function analyzeEnrollmentRows(rows = []) {
+  return analyzeFixedRows(
+    rows,
+    [
+      { key: "subject", aliases: ["과목명", "과목"] },
+      { key: "classNum", aliases: ["반", "학급"] },
+      { key: "number", aliases: ["번호", "출석번호"] },
+      { key: "name", aliases: ["이름", "성명", "학생명"] },
+      { key: "room", aliases: ["호실", "고사실", "교실"] },
+    ],
+    "INVALID_ENROLLMENT_ROW",
+    "DUPLICATE_ENROLLMENT",
+    (row, indexes, rowNumber) => {
+      const subject_name = compactText(row[indexes.subject], 80);
+      const class_num = Number(row[indexes.classNum]);
+      const number = Number(row[indexes.number]);
+      const name = compactText(row[indexes.name], 50);
+      const room_name = compactText(row[indexes.room], 80);
+      if (
+        !subject_name ||
+        !Number.isInteger(class_num) ||
+        class_num < 1 ||
+        !Number.isInteger(number) ||
+        number < 1 ||
+        !name
+      ) return null;
+      return { subject_name, class_num, number, name, room_name, row_number: rowNumber };
+    },
+    (item) => `${item.subject_name}|${item.class_num}|${item.number}`,
+    (left, right) =>
+      left.subject_name.localeCompare(right.subject_name, "ko") ||
+      left.class_num - right.class_num ||
+      left.number - right.number,
+  );
+}
+
+export function analyzeManualSeatRows(rows = []) {
+  return analyzeFixedRows(
+    rows,
+    [
+      { key: "classNum", aliases: ["반", "학급"] },
+      { key: "number", aliases: ["번호", "출석번호"] },
+      { key: "name", aliases: ["이름", "성명", "학생명"] },
+    ],
+    "INVALID_SEAT_ROW",
+    "DUPLICATE_SEAT_STUDENT",
+    (row, indexes, rowNumber) => {
+      const class_num = Number(row[indexes.classNum]);
+      const number = Number(row[indexes.number]);
+      const name = compactText(row[indexes.name], 50);
+      if (
+        !Number.isInteger(class_num) ||
+        class_num < 1 ||
+        !Number.isInteger(number) ||
+        number < 1 ||
+        !name
+      ) return null;
+      return { class_num, number, name, row_number: rowNumber };
+    },
+    (item) => `${item.class_num}|${item.number}`,
+    (left, right) => left.class_num - right.class_num || left.number - right.number,
+  );
 }
 
 export function absenceKey({ exam_date, period, student_id }) {
@@ -177,16 +317,16 @@ export function generateSeatAssignment({
   selectedIds = [],
   absentIds = [],
 }) {
-  const selected = new Set(selectedIds);
-  const absent = new Set(absentIds);
+  const selected = new Set(selectedIds.map(String));
+  const absent = new Set(absentIds.map(String));
   const sorted = sortStudents(students);
   const queue =
     mode === "own"
       ? [
-          ...sorted.filter((student) => selected.has(student.id)),
-          ...sorted.filter((student) => !selected.has(student.id)),
+          ...sorted.filter((student) => selected.has(String(student.id)) || absent.has(String(student.id))),
+          ...sorted.filter((student) => !selected.has(String(student.id)) && !absent.has(String(student.id))),
         ]
-      : sorted.filter((student) => selected.has(student.id));
+      : sorted.filter((student) => selected.has(String(student.id)));
   const slots = buildSeatSlots(rows, cols, startSide, disabledSeats);
   if (queue.length > slots.length) {
     return {
@@ -202,11 +342,88 @@ export function generateSeatAssignment({
     return {
       ...slot,
       student,
-      selected: Boolean(student && selected.has(student.id)),
-      absent: Boolean(student && absent.has(student.id)),
+      selected: Boolean(student && selected.has(String(student.id))),
+      absent: Boolean(student && absent.has(String(student.id))),
     };
   });
   return { ok: true, error: "", assignments, slots };
+}
+
+export function resolveStudentRoom({
+  studentId,
+  subjectName,
+  timetableItem,
+  enrollments = [],
+  classInfo,
+}) {
+  const enrollment = enrollments.find(
+    (item) =>
+      String(item.student_id) === String(studentId) &&
+      compactText(item.subject_name, 80) === compactText(subjectName, 80),
+  );
+  return (
+    compactText(enrollment?.room_name, 80) ||
+    compactText(timetableItem?.room_name, 80) ||
+    (timetableItem?.subject_type === "common" ? classLabel(classInfo) : "")
+  );
+}
+
+export function seatChartKey(chart = {}) {
+  return [
+    chart.mode || "",
+    chart.exam_date || "",
+    Number(chart.period) || "",
+    Number(chart.grade) || "",
+    chart.class_id || "",
+    compactText(chart.subject_name, 80),
+    compactText(chart.room_name, 80),
+  ].join("|");
+}
+
+export function summarizeAbsences(rows = []) {
+  const result = Object.fromEntries(ABSENCE_REASONS.map((reason) => [reason, 0]));
+  rows.forEach((item) => {
+    const reason = ABSENCE_REASONS.includes(item.reason) ? item.reason : "기타";
+    result[reason] += 1;
+  });
+  return result;
+}
+
+export function aggregateAbsenceReport(rows = []) {
+  const increment = (map, key, seed) => {
+    if (!map.has(key)) map.set(key, { ...seed, count: 0 });
+    map.get(key).count += 1;
+  };
+  const reasons = new Map();
+  const classes = new Map();
+  const dates = new Map();
+  const students = new Map();
+
+  rows.forEach((item) => {
+    increment(reasons, item.reason || "기타", { reason: item.reason || "기타" });
+    increment(classes, String(item.class_id || item.class_label || ""), {
+      class_id: item.class_id || "",
+      class_label: item.class_label || "",
+    });
+    increment(dates, String(item.exam_date || ""), { exam_date: item.exam_date || "" });
+    increment(students, String(item.student_id || ""), {
+      student_id: item.student_id || "",
+      class_label: item.class_label || "",
+      student_number: item.student_number ?? "",
+      student_name: item.student_name || "",
+    });
+  });
+
+  return {
+    reason_summary: [...reasons.values()].sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason, "ko")),
+    class_summary: [...classes.values()].sort((a, b) => a.class_label.localeCompare(b.class_label, "ko")),
+    date_summary: [...dates.values()].sort((a, b) => a.exam_date.localeCompare(b.exam_date)),
+    student_summary: [...students.values()].sort(
+      (a, b) =>
+        a.class_label.localeCompare(b.class_label, "ko") ||
+        Number(a.student_number) - Number(b.student_number),
+    ),
+  };
 }
 
 function appliesToClass(item, classId) {

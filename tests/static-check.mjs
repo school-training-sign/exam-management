@@ -19,10 +19,14 @@ function walk(directory) {
 walk(root);
 const contents = files.map((file) => [file, fs.readFileSync(file, "utf8")]);
 const forbidden = [
-  ["운영 학교코드", new RegExp(["HANYANG", "3520"].join(""), "i")],
+  ["하드코딩 학교코드", /(?:school[_-]?code|학교코드)\s*[:=]\s*["'][A-Z0-9_-]{6,}["']/i],
   ["하드코딩 암호 키", /ADMIN_PASSWORD\s*[:=]/i],
   ["인라인 비밀키", /(?:api[_-]?key|secret)\s*[:=]\s*["'][^_"'][^"']{8,}/i],
 ];
+const privateSchoolCode = String(process.env.PRIVATE_SCHOOL_CODE || "").trim();
+if (privateSchoolCode) {
+  forbidden.push(["운영 학교코드", new RegExp(privateSchoolCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")]);
+}
 const failures = [];
 for (const [label, pattern] of forbidden) {
   for (const [file, content] of contents) {
@@ -30,7 +34,12 @@ for (const [label, pattern] of forbidden) {
   }
 }
 const config = fs.readFileSync(path.join(root, "public", "assets", "config.js"), "utf8");
-if (!config.includes("__APPS_SCRIPT_WEB_APP_URL__")) failures.push("config.js의 배포 URL 자리표시자가 없습니다.");
+const apiUrl = config.match(/API_URL:\s*["']([^"']*)["']/)?.[1] || "";
+const validPlaceholder = apiUrl === "__APPS_SCRIPT_WEB_APP_URL__";
+const validDeployment = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(apiUrl);
+if (!validPlaceholder && !validDeployment) {
+  failures.push("config.js의 API_URL은 배포 자리표시자 또는 Apps Script /exec 주소여야 합니다.");
+}
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);

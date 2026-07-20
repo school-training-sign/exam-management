@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  aggregateAbsenceReport,
+  analyzeEnrollmentRows,
+  analyzeManualSeatRows,
+  analyzeStudentRows,
   absenceKey,
   buildPersonalTimetable,
   buildSeatSlots,
@@ -9,6 +13,9 @@ import {
   normalizeEnrollmentRows,
   normalizeManualSeatRows,
   normalizeStudentRows,
+  resolveStudentRoom,
+  seatChartKey,
+  summarizeAbsences,
 } from "../src/core.js";
 
 test("학생 명단 헤더를 인식하고 중복 번호를 제거한다", () => {
@@ -47,7 +54,26 @@ test("선택과목 엑셀의 고정 열을 정규화한다", () => {
   assert.deepEqual(normalizeEnrollmentRows([
     ["과목명", "반", "번호", "이름", "호실"],
     ["경제", 1, 2, "김하늘", "별실 1"],
-  ]), [{ subject_name: "경제", class_num: 1, number: 2, name: "김하늘", room_name: "별실 1" }]);
+  ]), [{
+    subject_name: "경제",
+    class_num: 1,
+    number: 2,
+    name: "김하늘",
+    room_name: "별실 1",
+    row_number: 2,
+  }]);
+});
+
+test("선택과목 정렬 뒤에도 미매칭 안내용 원본 행 번호를 유지한다", () => {
+  const rows = normalizeEnrollmentRows([
+    ["과목명", "반", "번호", "이름", "호실"],
+    ["세계사", 1, 2, "김하늘", "별실 2"],
+    ["경제", 1, 1, "박다온", "별실 1"],
+  ]);
+  assert.deepEqual(rows.map((item) => [item.subject_name, item.row_number]), [
+    ["경제", 3],
+    ["세계사", 2],
+  ]);
 });
 
 test("자리배치 수동 명단의 반·번호·이름 열을 정규화한다", () => {
@@ -56,6 +82,27 @@ test("자리배치 수동 명단의 반·번호·이름 열을 정규화한다",
     [2, 3, "김하늘"],
     [2, 3, "중복학생"],
   ]), [{ class_num: 2, number: 3, name: "김하늘" }]);
+});
+
+test("잘못된 엑셀은 행 번호와 오류 코드를 보존하고 일부 저장을 막을 수 있다", () => {
+  assert.deepEqual(analyzeStudentRows([
+    ["학년", "반", "번호", "이름"],
+    [1, 1, 1, "가"],
+    [1, 1, 1, "중복"],
+    [1, 1, 2, ""],
+  ]).errors, [
+    { row_number: 3, code: "DUPLICATE_STUDENT_NUMBER" },
+    { row_number: 4, code: "INVALID_STUDENT_ROW" },
+  ]);
+  assert.deepEqual(analyzeEnrollmentRows([
+    ["과목명", "반", "번호", "이름", "호실"],
+    ["경제", 1, 1, "가", "별실"],
+    ["경제", 1, 1, "가", "별실"],
+  ]).errors, [{ row_number: 3, code: "DUPLICATE_ENROLLMENT" }]);
+  assert.deepEqual(analyzeManualSeatRows([
+    ["반", "번호", "이름"],
+    [1, "오류", "가"],
+  ]).errors, [{ row_number: 2, code: "INVALID_SEAT_ROW" }]);
 });
 
 test("결시 키는 같은 학생·고사일·교시에 대해 동일하다", () => {
@@ -98,6 +145,63 @@ test("좌석보다 응시자가 많으면 생성하지 않는다", () => {
   });
   assert.equal(result.ok, false);
   assert.match(result.error, /좌석/);
+});
+
+test("각자 교실은 응시자와 결시자를 먼저 배치하고 미응시자를 뒤에 둔다", () => {
+  const result = generateSeatAssignment({
+    students: [
+      { id: "s1", number: 1, name: "가" },
+      { id: "s2", number: 2, name: "나" },
+      { id: "s3", number: 3, name: "다" },
+    ],
+    rows: 1,
+    cols: 3,
+    mode: "own",
+    selectedIds: ["s2"],
+    absentIds: ["s3"],
+  });
+  assert.deepEqual(result.assignments.map((item) => item.student.id), ["s2", "s3", "s1"]);
+  assert.equal(result.assignments[1].absent, true);
+});
+
+test("학생별 호실을 시간표 기본 호실보다 우선한다", () => {
+  const common = {
+    subject_name: "경제",
+    subject_type: "elective",
+    room_name: "기본 별실",
+  };
+  assert.equal(resolveStudentRoom({
+    studentId: "s1",
+    subjectName: "경제",
+    timetableItem: common,
+    enrollments: [{ student_id: "s1", subject_name: "경제", room_name: "학생 별실" }],
+  }), "학생 별실");
+  assert.equal(resolveStudentRoom({
+    studentId: "s2",
+    subjectName: "경제",
+    timetableItem: common,
+    enrollments: [],
+  }), "기본 별실");
+});
+
+test("같은 자리배치 조합은 같은 갱신 키를 사용한다", () => {
+  const left = { mode: "separate", exam_date: "2026-07-20", period: 1, grade: 3, subject_name: "경제", room_name: "별실 1" };
+  const right = { ...left, id: "다른-id", updated_at: "나중" };
+  assert.equal(seatChartKey(left), seatChartKey(right));
+});
+
+test("결시 사유와 기간 통계를 사유·학급·일자·학생별로 집계한다", () => {
+  const rows = [
+    { reason: "질병", class_id: "c1", class_label: "1학년 1반", exam_date: "2026-07-20", student_id: "s1", student_number: 1, student_name: "가" },
+    { reason: "질병", class_id: "c1", class_label: "1학년 1반", exam_date: "2026-07-21", student_id: "s1", student_number: 1, student_name: "가" },
+    { reason: "인정", class_id: "c2", class_label: "1학년 2반", exam_date: "2026-07-21", student_id: "s2", student_number: 2, student_name: "나" },
+  ];
+  assert.equal(summarizeAbsences(rows).질병, 2);
+  const summary = aggregateAbsenceReport(rows);
+  assert.deepEqual(summary.reason_summary.map((item) => [item.reason, item.count]), [["질병", 2], ["인정", 1]]);
+  assert.equal(summary.class_summary.length, 2);
+  assert.equal(summary.date_summary.length, 2);
+  assert.equal(summary.student_summary[0].count, 2);
 });
 
 test("선택과목 등록과 시간표 과목명을 연결해 개인 시간표를 만든다", () => {

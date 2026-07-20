@@ -1,43 +1,45 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  IconAlertTriangle,
-  IconArmchair,
-  IconBook,
-  IconBuildingBank,
-  IconCalendar,
-  IconCheck,
-  IconChevronRight,
-  IconClipboardCheck,
-  IconClock,
-  IconDeviceFloppy,
-  IconDownload,
-  IconFileSpreadsheet,
-  IconLayoutGrid,
-  IconListCheck,
-  IconLock,
-  IconLogout,
-  IconPlus,
-  IconPrinter,
-  IconRefresh,
-  IconSettings,
-  IconShieldLock,
-  IconTrash,
-  IconUpload,
-  IconUserCheck,
-  IconUsers,
-  IconX,
-} from "@tabler/icons-react";
+import IconAlertTriangle from "@tabler/icons-react/dist/esm/icons/IconAlertTriangle.mjs";
+import IconArmchair from "@tabler/icons-react/dist/esm/icons/IconArmchair.mjs";
+import IconBook from "@tabler/icons-react/dist/esm/icons/IconBook.mjs";
+import IconBuildingBank from "@tabler/icons-react/dist/esm/icons/IconBuildingBank.mjs";
+import IconCalendar from "@tabler/icons-react/dist/esm/icons/IconCalendar.mjs";
+import IconCheck from "@tabler/icons-react/dist/esm/icons/IconCheck.mjs";
+import IconChevronRight from "@tabler/icons-react/dist/esm/icons/IconChevronRight.mjs";
+import IconClipboardCheck from "@tabler/icons-react/dist/esm/icons/IconClipboardCheck.mjs";
+import IconClock from "@tabler/icons-react/dist/esm/icons/IconClock.mjs";
+import IconDeviceFloppy from "@tabler/icons-react/dist/esm/icons/IconDeviceFloppy.mjs";
+import IconDownload from "@tabler/icons-react/dist/esm/icons/IconDownload.mjs";
+import IconFileSpreadsheet from "@tabler/icons-react/dist/esm/icons/IconFileSpreadsheet.mjs";
+import IconLayoutGrid from "@tabler/icons-react/dist/esm/icons/IconLayoutGrid.mjs";
+import IconListCheck from "@tabler/icons-react/dist/esm/icons/IconListCheck.mjs";
+import IconLock from "@tabler/icons-react/dist/esm/icons/IconLock.mjs";
+import IconLogout from "@tabler/icons-react/dist/esm/icons/IconLogout.mjs";
+import IconPlus from "@tabler/icons-react/dist/esm/icons/IconPlus.mjs";
+import IconPrinter from "@tabler/icons-react/dist/esm/icons/IconPrinter.mjs";
+import IconRefresh from "@tabler/icons-react/dist/esm/icons/IconRefresh.mjs";
+import IconSettings from "@tabler/icons-react/dist/esm/icons/IconSettings.mjs";
+import IconShieldLock from "@tabler/icons-react/dist/esm/icons/IconShieldLock.mjs";
+import IconTrash from "@tabler/icons-react/dist/esm/icons/IconTrash.mjs";
+import IconUpload from "@tabler/icons-react/dist/esm/icons/IconUpload.mjs";
+import IconUserCheck from "@tabler/icons-react/dist/esm/icons/IconUserCheck.mjs";
+import IconUsers from "@tabler/icons-react/dist/esm/icons/IconUsers.mjs";
+import IconX from "@tabler/icons-react/dist/esm/icons/IconX.mjs";
 import {
   ABSENCE_REASONS,
+  aggregateAbsenceReport,
+  analyzeEnrollmentRows,
+  analyzeManualSeatRows,
+  analyzeStudentRows,
   buildPersonalTimetable,
   classLabel,
   formatKoreanDate,
   generateSeatAssignment,
   makeId,
-  normalizeEnrollmentRows,
-  normalizeManualSeatRows,
-  normalizeStudentRows,
+  resolveStudentRoom,
+  seatChartKey,
   sortStudents,
+  summarizeAbsences,
   toCsvSafeFileName,
 } from "./core.js";
 import {
@@ -63,6 +65,28 @@ const EMPTY_BOOTSTRAP = {
 
 function messageFrom(error) {
   return error instanceof Error ? error.message : String(error || "오류가 발생했습니다.");
+}
+
+function importErrorMessage(prefix, errors = []) {
+  const labels = {
+    INVALID_HEADERS: "열 이름 오류",
+    INVALID_STUDENT_ROW: "학생 값 오류",
+    DUPLICATE_STUDENT_NUMBER: "학급 내 번호 중복",
+    INVALID_ENROLLMENT_ROW: "선택과목 값 오류",
+    DUPLICATE_ENROLLMENT: "선택과목 중복",
+    INVALID_SEAT_ROW: "수동 명단 값 오류",
+    DUPLICATE_SEAT_STUDENT: "수동 명단 학생 중복",
+    STUDENT_NOT_FOUND: "등록 학생과 불일치",
+    CLASS_NOT_FOUND: "학급 불일치",
+    STUDENT_NAME_MISMATCH: "학생 이름 불일치",
+    SUBJECT_NOT_FOUND: "선택과목 없음",
+    SUBJECT_CLASS_MISMATCH: "과목 적용 학급 아님",
+  };
+  const details = errors
+    .slice(0, 10)
+    .map((item) => `${item.row_number}행 ${labels[item.code] || item.code}`)
+    .join(", ");
+  return `${prefix}: ${details}${errors.length > 10 ? ` 외 ${errors.length - 10}건` : ""}`;
 }
 
 function downloadWorkbook(fileName, sheets) {
@@ -180,13 +204,42 @@ function AdminDialog({ open, onClose, onUnlock }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const passwordRef = useRef(null);
+  const dialogRef = useRef(null);
+  const returnFocusRef = useRef(null);
 
   useEffect(() => {
-    if (open) {
-      setPassword("");
-      setError("");
-      setTimeout(() => passwordRef.current?.focus(), 50);
-    }
+    if (!open) return undefined;
+    returnFocusRef.current = document.activeElement;
+    setPassword("");
+    setError("");
+    const focusTimer = setTimeout(() => passwordRef.current?.focus(), 50);
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...dialogRef.current?.querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+      ) || []];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      clearTimeout(focusTimer);
+      document.removeEventListener("keydown", handleKeyDown);
+      setTimeout(() => returnFocusRef.current?.focus(), 0);
+    };
   }, [open]);
 
   if (!open) return null;
@@ -211,7 +264,7 @@ function AdminDialog({ open, onClose, onUnlock }) {
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="admin-title">
+      <section ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby="admin-title">
         <button className="icon-button dialog-close" onClick={onClose} aria-label="닫기">
           <IconX size={20} />
         </button>
@@ -257,28 +310,59 @@ function AbsencePanel({ bootstrap }) {
   const [examDate, setExamDate] = useState(selectFirst(bootstrap.exam_dates, "exam_date"));
   const [classId, setClassId] = useState(selectFirst(bootstrap.classes));
   const [period, setPeriod] = useState(1);
-  const [context, setContext] = useState({ students: [], absences: [], completed: false });
+  const [context, setContext] = useState({
+    students: [],
+    absences: [],
+    completed: false,
+    submitted: false,
+    revision: 0,
+  });
+  const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [savingId, setSavingId] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const manualFileRef = useRef(null);
 
   useEffect(() => {
     if (!examDate && bootstrap.exam_dates.length) setExamDate(bootstrap.exam_dates[0].exam_date);
     if (!classId && bootstrap.classes.length) setClassId(bootstrap.classes[0].id);
   }, [bootstrap.exam_dates, bootstrap.classes, examDate, classId]);
 
+  function resetLoaded(next) {
+    next();
+    setLoaded(false);
+    setDirty(false);
+    setConfirmSubmit(false);
+    setMessage("");
+    setError("");
+    setContext({ students: [], absences: [], completed: false, submitted: false, revision: 0 });
+  }
+
   const load = useCallback(async () => {
-    if (!examDate || !classId || !period) return;
+    if (!examDate || !classId || !period) {
+      setError("고사일, 학급, 교시를 모두 선택하세요.");
+      return;
+    }
     setLoading(true);
+    setMessage("");
     setError("");
     try {
-      setContext(await apiRequest("get_absence_context", {
+      const result = await apiRequest("get_absence_context", {
         exam_date: examDate,
         class_id: classId,
         period,
-      }));
+      });
+      setContext({
+        students: result.students || [],
+        absences: result.absences || [],
+        completed: Boolean(result.completed ?? result.submitted),
+        submitted: Boolean(result.submitted ?? result.completed),
+        revision: Number(result.revision || 0),
+      });
+      setLoaded(true);
+      setDirty(false);
+      setConfirmSubmit(false);
     } catch (nextError) {
       setError(messageFrom(nextError));
     } finally {
@@ -286,26 +370,29 @@ function AbsencePanel({ bootstrap }) {
     }
   }, [examDate, classId, period]);
 
-  useEffect(() => { load(); }, [load]);
-
   const absenceMap = useMemo(
     () => new Map(context.absences.map((item) => [String(item.student_id), item])),
     [context.absences],
   );
 
-  async function updateStudent(student, patch) {
+  function updateStudent(student, patch) {
     const current = absenceMap.get(String(student.id));
+    const nextReason = patch.reason ?? current?.reason ?? "미인정";
     const next = {
       absent: patch.absent ?? Boolean(current),
-      reason: patch.reason ?? current?.reason ?? "질병",
-      reason_detail: patch.reason_detail ?? current?.reason_detail ?? "",
+      reason: nextReason,
+      reason_detail: nextReason === "기타"
+        ? patch.reason_detail ?? current?.reason_detail ?? ""
+        : "",
     };
-    setSavingId(student.id);
     setMessage("");
     setError("");
+    setDirty(true);
+    setConfirmSubmit(false);
     setContext((value) => ({
       ...value,
       completed: false,
+      submitted: false,
       absences: value.absences
         .filter((item) => String(item.student_id) !== String(student.id))
         .concat(next.absent ? [{
@@ -318,32 +405,56 @@ function AbsencePanel({ bootstrap }) {
           reason_detail: next.reason_detail,
         }] : []),
     }));
+  }
+
+  async function submitAll() {
+    const missingDetail = context.absences.find(
+      (item) => item.reason === "기타" && !String(item.reason_detail || "").trim(),
+    );
+    if (missingDetail) {
+      const student = context.students.find((item) => String(item.id) === String(missingDetail.student_id));
+      setError(`${student?.number || ""}번 ${student?.name || "학생"}의 기타 상세 사유를 입력하세요.`);
+      return;
+    }
+    if (!confirmSubmit) {
+      setConfirmSubmit(true);
+      setMessage(`제출 전 확인: 결시 ${context.absences.length}명 명단을 고사본부에 제출합니다.`);
+      setError("");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    setError("");
     try {
-      await apiRequest("set_absence", {
+      const result = await apiRequest("submit_absence_input", {
         exam_date: examDate,
         class_id: classId,
         period,
-        student_id: student.id,
-        ...next,
+        expected_revision: Number(context.revision || 0),
+        absences: context.absences.map((item) => ({
+          student_id: item.student_id,
+          reason: item.reason,
+          reason_detail: item.reason === "기타" ? String(item.reason_detail || "").trim() : "",
+        })),
       });
-      setMessage(`${student.number}번 ${student.name} 학생 정보를 저장했습니다.`);
+      setContext((value) => ({
+        ...value,
+        absences: result.absences || value.absences,
+        completed: true,
+        submitted: true,
+        revision: Number(result.revision ?? value.revision + 1),
+      }));
+      setDirty(false);
+      setConfirmSubmit(false);
+      setMessage("결시 명단을 일괄 제출했습니다. 다시 수정해 제출하면 최신 내용으로 교체됩니다.");
     } catch (nextError) {
-      setError(messageFrom(nextError));
-      await load();
-    } finally {
-      setSavingId("");
-    }
-  }
-
-  async function complete() {
-    setLoading(true);
-    setMessage("");
-    try {
-      await apiRequest("complete_input", { exam_date: examDate, class_id: classId, period });
-      setContext((value) => ({ ...value, completed: true }));
-      setMessage("고사본부에 입력 완료로 표시했습니다.");
-    } catch (nextError) {
-      setError(messageFrom(nextError));
+      if (nextError?.code === "REVISION_CONFLICT") {
+        await load();
+        setError("다른 사용자가 같은 명단을 먼저 수정했습니다. 최신 상태를 다시 불러왔으니 확인 후 제출하세요.");
+      } else {
+        setError(messageFrom(nextError));
+      }
+      setConfirmSubmit(false);
     } finally {
       setLoading(false);
     }
@@ -356,25 +467,30 @@ function AbsencePanel({ bootstrap }) {
       <SectionHeader
         eyebrow="TEACHER DESK"
         title="결시 학생 입력"
-        description="날짜와 학급, 교시를 선택한 뒤 결시 학생과 사유를 저장하세요."
-        actions={<button className="button button-light" onClick={() => window.print()}><IconPrinter size={17} /> 응시현황표 인쇄</button>}
+        description="고사일·학급·교시를 선택해 명단을 불러온 뒤, 결시자와 사유를 한 번에 제출하세요."
+        actions={<button className="button button-light" onClick={() => window.print()} disabled={!loaded}><IconPrinter size={17} /> 응시현황표 인쇄</button>}
       />
       <div className="filter-bar no-print">
         <label>고사일
-          <select value={examDate} onChange={(event) => setExamDate(event.target.value)}>
+          <select value={examDate} onChange={(event) => resetLoaded(() => setExamDate(event.target.value))}>
             {bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}
           </select>
         </label>
         <label>학급
-          <select value={classId} onChange={(event) => setClassId(event.target.value)}>
+          <select value={classId} onChange={(event) => resetLoaded(() => setClassId(event.target.value))}>
             {bootstrap.classes.map((item) => <option key={item.id} value={item.id}>{classLabel(item)}</option>)}
           </select>
         </label>
         <label>교시
-          <select value={period} onChange={(event) => setPeriod(Number(event.target.value))}>
+          <select value={period} onChange={(event) => resetLoaded(() => setPeriod(Number(event.target.value)))}>
             {PERIODS.map((item) => <option key={item} value={item}>{item}교시</option>)}
           </select>
         </label>
+        <div className="filter-action">
+          <LoadingButton className="button button-primary" loading={loading} onClick={load}>
+            <IconRefresh size={17} /> 명단 불러오기
+          </LoadingButton>
+        </div>
       </div>
 
       <div className="print-heading">
@@ -384,9 +500,9 @@ function AbsencePanel({ bootstrap }) {
       <Notice>{message}</Notice>
       <Notice tone="error">{error}</Notice>
 
-      {loading && !context.students.length ? (
+      {loading && !loaded ? (
         <div className="loading-block"><span className="spinner spinner-dark" /> 명단을 불러오는 중입니다.</div>
-      ) : context.students.length ? (
+      ) : loaded && context.students.length ? (
         <div className="student-list">
           {context.students.map((student) => {
             const absence = absenceMap.get(String(student.id));
@@ -396,7 +512,7 @@ function AbsencePanel({ bootstrap }) {
                   className="absence-toggle no-print"
                   onClick={() => updateStudent(student, { absent: !absence })}
                   aria-pressed={Boolean(absence)}
-                  disabled={savingId === student.id}
+                  aria-label={`${student.number}번 ${student.name} ${absence ? "결시 해제" : "결시 선택"}`}
                 >
                   {absence ? <IconCheck size={17} /> : null}
                 </button>
@@ -412,22 +528,16 @@ function AbsencePanel({ bootstrap }) {
                     <select
                       value={absence.reason}
                       onChange={(event) => updateStudent(student, { reason: event.target.value })}
+                      aria-label={`${student.name} 결시 사유`}
                     >
                       {ABSENCE_REASONS.map((reason) => <option key={reason}>{reason}</option>)}
                     </select>
                     {absence.reason === "기타" ? (
                       <input
                         value={absence.reason_detail || ""}
-                        placeholder="기타 사유"
-                        onBlur={(event) => updateStudent(student, { reason_detail: event.target.value })}
-                        onChange={(event) => setContext((value) => ({
-                          ...value,
-                          absences: value.absences.map((item) =>
-                            String(item.student_id) === String(student.id)
-                              ? { ...item, reason_detail: event.target.value }
-                              : item,
-                          ),
-                        }))}
+                        placeholder="상세 사유(필수)"
+                        aria-label={`${student.name} 상세 사유`}
+                        onChange={(event) => updateStudent(student, { reason_detail: event.target.value })}
                       />
                     ) : null}
                   </div>
@@ -437,22 +547,38 @@ function AbsencePanel({ bootstrap }) {
             );
           })}
         </div>
-      ) : (
+      ) : loaded ? (
         <EmptyState icon={IconUsers} title="등록된 학생이 없습니다" description="관리자 설정에서 학급과 학생 명단을 먼저 등록하세요." />
+      ) : (
+        <EmptyState icon={IconListCheck} title="결시 명단을 불러오세요" description="고사일, 학급, 교시를 확인한 뒤 ‘명단 불러오기’를 누르세요." />
       )}
 
-      <div className="completion-bar no-print">
+      {loaded ? <div className="completion-bar no-print">
         <div>
-          <span className={context.completed ? "completion-dot done" : "completion-dot"} />
+          <span className={context.submitted && !dirty ? "completion-dot done" : "completion-dot"} />
           <div>
-            <strong>{context.completed ? "입력 완료" : "입력 확인 전"}</strong>
-            <p>결시 입력을 모두 확인한 뒤 고사본부에 완료 상태를 전송합니다.</p>
+            <strong>{context.submitted && !dirty ? "제출 완료" : dirty ? "수정 중" : "입력 확인 전"}</strong>
+            <p>현재 명단 버전 {context.revision} · 결시 {context.absences.length}명</p>
           </div>
         </div>
-        <LoadingButton className="button button-gold" loading={loading} onClick={complete} disabled={!context.students.length}>
-          <IconClipboardCheck size={18} /> 입력 완료
-        </LoadingButton>
-      </div>
+        <div className="completion-actions">
+          {confirmSubmit ? (
+            <button
+              className="button button-light"
+              type="button"
+              onClick={() => {
+                setConfirmSubmit(false);
+                setMessage("");
+              }}
+            >
+              취소
+            </button>
+          ) : null}
+          <LoadingButton className="button button-gold" loading={loading} onClick={submitAll} disabled={!context.students.length}>
+            <IconClipboardCheck size={18} /> {confirmSubmit ? "확인하고 제출" : context.revision ? "수정 내용 다시 제출" : "결시 명단 일괄 제출"}
+          </LoadingButton>
+        </div>
+      </div> : null}
     </section>
   );
 }
@@ -462,8 +588,14 @@ function HqPanel({ bootstrap }) {
   const [period, setPeriod] = useState(1);
   const [grade, setGrade] = useState("");
   const [classId, setClassId] = useState("");
-  const [status, setStatus] = useState({ absences: [], completions: [] });
-  const [report, setReport] = useState([]);
+  const [status, setStatus] = useState({ absences: [], completions: [], summary: null });
+  const [report, setReport] = useState({
+    absences: [],
+    reason_summary: [],
+    class_summary: [],
+    date_summary: [],
+    student_summary: [],
+  });
   const [startDate, setStartDate] = useState(selectFirst(bootstrap.exam_dates, "exam_date"));
   const [endDate, setEndDate] = useState(bootstrap.exam_dates.at(-1)?.exam_date || "");
   const [loading, setLoading] = useState(false);
@@ -499,8 +631,18 @@ function HqPanel({ bootstrap }) {
 
   useEffect(() => {
     refresh();
-    const timer = setInterval(() => refresh(true), 30_000);
-    return () => clearInterval(timer);
+    const tick = () => {
+      if (document.visibilityState === "visible") refresh(true);
+    };
+    const timer = setInterval(tick, 30_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh(true);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   const filteredClasses = bootstrap.classes.filter(
@@ -508,9 +650,22 @@ function HqPanel({ bootstrap }) {
   );
   const completionKeys = new Set(
     status.completions
-      .filter((item) => item.exam_date === examDate && Number(item.period) === Number(period))
+      .filter(
+        (item) =>
+          item.exam_date === examDate &&
+          Number(item.period) === Number(period) &&
+          Boolean(item.submitted ?? item.completed_at),
+      )
       .map((item) => String(item.class_id)),
   );
+  const filteredClassIds = new Set(filteredClasses.map((item) => String(item.id)));
+  const enrolled = Number(
+    status.summary?.enrolled ??
+      bootstrap.students.filter((item) => filteredClassIds.has(String(item.class_id))).length,
+  );
+  const absent = Number(status.summary?.absent ?? status.absences.length);
+  const present = Number(status.summary?.present ?? Math.max(0, enrolled - absent));
+  const reasonSummary = status.summary?.reasons || summarizeAbsences(status.absences);
 
   async function loadReport() {
     setLoading(true);
@@ -521,7 +676,14 @@ function HqPanel({ bootstrap }) {
         grade: grade || "",
         class_id: classId || "",
       });
-      setReport(result.absences || []);
+      const fallback = aggregateAbsenceReport(result.absences || []);
+      setReport({
+        absences: result.absences || [],
+        reason_summary: result.reason_summary || fallback.reason_summary,
+        class_summary: result.class_summary || fallback.class_summary,
+        date_summary: result.date_summary || fallback.date_summary,
+        student_summary: result.student_summary || fallback.student_summary,
+      });
     } catch (nextError) {
       setError(messageFrom(nextError));
     } finally {
@@ -529,13 +691,59 @@ function HqPanel({ bootstrap }) {
     }
   }
 
-  function exportRows(rows, title) {
-    downloadWorkbook(title, {
+  function exportCurrentStatus() {
+    downloadWorkbook("교시별 결시·제출 현황", {
       결시현황: [
         ["고사일", "교시", "학년", "반", "번호", "이름", "사유", "세부사유", "수정시각"],
-        ...rows.map((item) => [
+        ...status.absences.map((item) => [
           item.exam_date, item.period, item.grade, item.class_num, item.student_number,
           item.student_name, item.reason, item.reason_detail || "", item.updated_at || "",
+        ]),
+      ],
+      제출현황: [
+        ["고사일", "교시", "학급", "제출상태", "제출시각", "버전"],
+        ...filteredClasses.map((classInfo) => {
+          const completion = status.completions.find(
+            (item) =>
+              String(item.class_id) === String(classInfo.id) &&
+              Boolean(item.submitted ?? item.completed_at),
+          );
+          return [
+            examDate,
+            period,
+            classLabel(classInfo),
+            completion ? "완료" : "대기",
+            completion?.completed_at || "",
+            completion?.revision || "",
+          ];
+        }),
+      ],
+      교시합계: [
+        ["구분", "인원"],
+        ["재적", enrolled],
+        ["응시", present],
+        ["결시", absent],
+        ...ABSENCE_REASONS.map((reason) => [reason, reasonSummary[reason] || 0]),
+      ],
+    });
+  }
+
+  function exportPeriodReport() {
+    downloadWorkbook("기간 결시 통계", {
+      결시상세: [
+        ["고사일", "교시", "학년", "반", "번호", "이름", "사유", "세부사유"],
+        ...report.absences.map((item) => [
+          item.exam_date, item.period, item.grade, item.class_num,
+          item.student_number, item.student_name, item.reason, item.reason_detail || "",
+        ]),
+      ],
+      사유별: [["사유", "건수"], ...report.reason_summary.map((item) => [item.reason, item.count])],
+      학급별: [["학급", "건수"], ...report.class_summary.map((item) => [item.class_label, item.count])],
+      일자별: [["고사일", "건수"], ...report.date_summary.map((item) => [item.exam_date, item.count])],
+      학생별: [
+        ["학급", "번호", "이름", "건수"],
+        ...report.student_summary.map((item) => [
+          item.class_label, item.student_number, item.student_name, item.count,
         ]),
       ],
     });
@@ -550,7 +758,7 @@ function HqPanel({ bootstrap }) {
         actions={
           <>
             <button className="button button-light" onClick={() => refresh()}><IconRefresh size={17} /> 새로고침</button>
-            <button className="button button-light" onClick={() => exportRows(status.absences, "교시별 결시 현황")}><IconDownload size={17} /> 엑셀</button>
+            <button className="button button-light" onClick={exportCurrentStatus}><IconDownload size={17} /> 교시 현황 엑셀</button>
           </>
         }
       />
@@ -583,9 +791,14 @@ function HqPanel({ bootstrap }) {
       <Notice tone="error">{error}</Notice>
 
       <div className="metric-grid">
-        <article><span>결시 학생</span><strong>{status.absences.length}<small>명</small></strong></article>
-        <article><span>입력 완료 학급</span><strong>{filteredClasses.filter((item) => completionKeys.has(String(item.id))).length}<small>개</small></strong></article>
-        <article><span>입력 대기 학급</span><strong>{filteredClasses.filter((item) => !completionKeys.has(String(item.id))).length}<small>개</small></strong></article>
+        <article><span>재적</span><strong>{enrolled}<small>명</small></strong></article>
+        <article><span>응시</span><strong>{present}<small>명</small></strong></article>
+        <article><span>결시</span><strong>{absent}<small>명</small></strong></article>
+      </div>
+      <div className="reason-summary" aria-label="사유별 결시 인원">
+        {ABSENCE_REASONS.map((reason) => (
+          <span key={reason}><strong>{reason}</strong> {reasonSummary[reason] || 0}명</span>
+        ))}
       </div>
 
       <div className="split-grid">
@@ -594,10 +807,10 @@ function HqPanel({ bootstrap }) {
           {status.absences.length ? (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>학급</th><th>번호</th><th>이름</th><th>사유</th></tr></thead>
+                <thead><tr><th>학급</th><th>번호</th><th>이름</th><th>사유</th><th>상세</th></tr></thead>
                 <tbody>{status.absences.map((item) => (
                   <tr key={item.id || `${item.student_id}-${item.period}`}>
-                    <td>{item.class_label}</td><td>{item.student_number}</td><td>{item.student_name}</td><td><span className="status-pill status-absent">{item.reason}</span></td>
+                    <td>{item.class_label}</td><td>{item.student_number}</td><td>{item.student_name}</td><td><span className="status-pill status-absent">{item.reason}</span></td><td>{item.reason_detail || "—"}</td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -621,35 +834,124 @@ function HqPanel({ bootstrap }) {
           <label>시작일<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
           <label>종료일<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
           <button className="button button-secondary" onClick={loadReport}>통계 조회</button>
-          <button className="button button-light" disabled={!report.length} onClick={() => exportRows(report, "기간 결시 통계")}><IconFileSpreadsheet size={17} /> 통계 엑셀</button>
+          <button className="button button-light" disabled={!report.absences.length} onClick={exportPeriodReport}><IconFileSpreadsheet size={17} /> 기간 통계 엑셀</button>
         </div>
-        {report.length ? <p className="report-summary">선택 기간 결시 기록 <strong>{report.length}건</strong>을 확인했습니다.</p> : null}
+        {report.absences.length ? (
+          <div className="report-results">
+            <p className="report-summary">선택 기간 결시 기록 <strong>{report.absences.length}건</strong></p>
+            <div className="report-summary-grid">
+              <div><h4>사유별</h4>{report.reason_summary.map((item) => <span key={item.reason}>{item.reason}<strong>{item.count}건</strong></span>)}</div>
+              <div><h4>학급별</h4>{report.class_summary.map((item) => <span key={item.class_id || item.class_label}>{item.class_label}<strong>{item.count}건</strong></span>)}</div>
+              <div><h4>일자별</h4>{report.date_summary.map((item) => <span key={item.exam_date}>{item.exam_date}<strong>{item.count}건</strong></span>)}</div>
+              <div><h4>학생별</h4>{report.student_summary.map((item) => <span key={item.student_id}>{item.class_label} {item.student_number}번 {item.student_name}<strong>{item.count}건</strong></span>)}</div>
+            </div>
+          </div>
+        ) : null}
       </article>
     </section>
   );
 }
 
 function SeatPanel({ bootstrap, onBootstrap }) {
+  const initialClass = bootstrap.classes[0];
   const [mode, setMode] = useState("separate");
   const [examDate, setExamDate] = useState(selectFirst(bootstrap.exam_dates, "exam_date"));
+  const [grade, setGrade] = useState(Number(initialClass?.grade || 1));
   const [classId, setClassId] = useState(selectFirst(bootstrap.classes));
   const [period, setPeriod] = useState(1);
-  const [rows, setRows] = useState(5);
-  const [cols, setCols] = useState(6);
+  const [subjectName, setSubjectName] = useState("");
+  const [rows, setRows] = useState(6);
+  const [cols, setCols] = useState(5);
   const [startSide, setStartSide] = useState("window");
-  const [roomName, setRoomName] = useState("별실 1");
+  const [roomName, setRoomName] = useState("");
   const [disabledSeats, setDisabledSeats] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [manualPool, setManualPool] = useState([]);
   const [absentIds, setAbsentIds] = useState([]);
   const [result, setResult] = useState({ assignments: [], ok: true, error: "" });
+  const [loadedChartId, setLoadedChartId] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const students = useMemo(
-    () => sortStudents(bootstrap.students.filter((item) => String(item.class_id) === String(classId))),
-    [bootstrap.students, classId],
+  const manualFileRef = useRef(null);
+  const seatEditorRef = useRef(null);
+
+  const classMap = useMemo(
+    () => new Map(bootstrap.classes.map((item) => [String(item.id), item])),
+    [bootstrap.classes],
   );
-  const selectedClass = bootstrap.classes.find((item) => String(item.id) === String(classId));
+  const gradeClasses = useMemo(
+    () => bootstrap.classes.filter((item) => Number(item.grade) === Number(grade)),
+    [bootstrap.classes, grade],
+  );
+  const selectedClass = classMap.get(String(classId));
+  const students = useMemo(
+    () => sortStudents(bootstrap.students.filter((item) =>
+      mode === "separate"
+        ? Number(classMap.get(String(item.class_id))?.grade) === Number(grade)
+        : String(item.class_id) === String(classId)
+    )),
+    [bootstrap.students, classMap, mode, grade, classId],
+  );
+  const timetableItems = useMemo(
+    () => bootstrap.timetable.filter((item) =>
+      item.exam_date === examDate &&
+      Number(item.period) === Number(period) &&
+      Number(item.grade) === Number(grade)
+    ),
+    [bootstrap.timetable, examDate, period, grade],
+  );
+  const selectedTimetable = timetableItems.find((item) => item.subject_name === subjectName);
+  const roomOptions = useMemo(() => {
+    if (mode === "own") {
+      return selectedClass ? [classLabel(selectedClass)] : [];
+    }
+    const options = new Set();
+    if (selectedTimetable?.room_name) options.add(selectedTimetable.room_name);
+    bootstrap.enrollments
+      .filter((item) => Number(item.grade) === Number(grade) && item.subject_name === subjectName)
+      .forEach((item) => {
+        if (item.room_name) options.add(item.room_name);
+      });
+    return [...options];
+  }, [bootstrap.enrollments, grade, subjectName, selectedTimetable, mode, selectedClass]);
+
+  const defaultExamineeIds = useMemo(() => {
+    if (!selectedTimetable) return mode === "own" ? students.map((item) => item.id) : [];
+    const applicable = new Set(
+      String(selectedTimetable.class_ids || "")
+        .split(/[|,]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+    return students.filter((student) => {
+      if (selectedTimetable.subject_type === "common") {
+        return !applicable.size || applicable.has(String(student.class_id));
+      }
+      const enrollment = bootstrap.enrollments.find(
+        (item) =>
+          String(item.student_id) === String(student.id) &&
+          item.subject_name === subjectName,
+      );
+      if (!enrollment) return false;
+      if (mode === "own") return true;
+      if (!roomName) return true;
+      return resolveStudentRoom({
+        studentId: student.id,
+        subjectName,
+        timetableItem: selectedTimetable,
+        enrollments: bootstrap.enrollments,
+        classInfo: classMap.get(String(student.class_id)),
+      }) === roomName;
+    }).map((item) => item.id);
+  }, [
+    selectedTimetable,
+    mode,
+    students,
+    bootstrap.enrollments,
+    subjectName,
+    roomName,
+    classMap,
+  ]);
 
   useEffect(() => {
     if (!examDate && bootstrap.exam_dates.length) setExamDate(bootstrap.exam_dates[0].exam_date);
@@ -657,77 +959,165 @@ function SeatPanel({ bootstrap, onBootstrap }) {
   }, [bootstrap.exam_dates, bootstrap.classes, examDate, classId]);
 
   useEffect(() => {
-    setManualPool([]);
-    setSelectedIds(students.map((item) => item.id));
-  }, [students]);
-  useEffect(() => {
-    if (!examDate || !classId) return;
-    apiRequest("get_absence_context", { exam_date: examDate, class_id: classId, period })
-      .then((value) => setAbsentIds(value.absences.map((item) => item.student_id)))
-      .catch(() => setAbsentIds([]));
-  }, [examDate, classId, period]);
+    if (loadedChartId) return;
+    if (!gradeClasses.some((item) => String(item.id) === String(classId))) {
+      setClassId(gradeClasses[0]?.id || "");
+    }
+  }, [gradeClasses, classId, loadedChartId]);
 
-  function createChart() {
+  useEffect(() => {
+    if (loadedChartId) return;
+    if (!timetableItems.some((item) => item.subject_name === subjectName)) {
+      setSubjectName(timetableItems[0]?.subject_name || "");
+    }
+  }, [timetableItems, subjectName, loadedChartId]);
+
+  useEffect(() => {
+    if (loadedChartId) return;
+    if (!roomName || (roomOptions.length && !roomOptions.includes(roomName))) {
+      setRoomName(roomOptions[0] || selectedTimetable?.room_name || (mode === "own" && selectedClass ? classLabel(selectedClass) : ""));
+    }
+  }, [roomOptions, selectedTimetable, roomName, mode, selectedClass, loadedChartId]);
+
+  useEffect(() => {
+    if (loadedChartId || manualPool.length) return;
+    setSelectedIds(defaultExamineeIds);
+    setResult({ assignments: [], ok: true, error: "" });
+  }, [defaultExamineeIds, loadedChartId, manualPool.length]);
+
+  useEffect(() => {
+    if (!examDate) return;
+    const request = mode === "separate"
+      ? apiRequest("get_hq_status", { exam_date: examDate, period, grade, class_id: "" })
+      : apiRequest("get_absence_context", { exam_date: examDate, class_id: classId, period });
+    request
+      .then((value) => setAbsentIds((value.absences || []).map((item) => item.student_id)))
+      .catch(() => setAbsentIds([]));
+  }, [mode, examDate, grade, classId, period]);
+
+  function changeSeatContext(change) {
+    setLoadedChartId("");
+    setManualPool([]);
+    setResult({ assignments: [], ok: true, error: "" });
+    change();
+  }
+
+  function invalidateSeatResult() {
+    setLoadedChartId("");
+    setResult({ assignments: [], ok: true, error: "" });
+  }
+
+  async function createChart() {
+    if (mode === "separate" && (!subjectName.trim() || !roomName.trim())) {
+      setError("별실 자리배치는 시간표 과목과 고사실을 모두 선택하세요.");
+      return;
+    }
+    let latestAbsentIds = absentIds;
+    try {
+      const current = mode === "separate"
+        ? await apiRequest("get_hq_status", { exam_date: examDate, period, grade, class_id: "" })
+        : await apiRequest("get_absence_context", { exam_date: examDate, class_id: classId, period });
+      latestAbsentIds = (current.absences || []).map((item) => item.student_id);
+      setAbsentIds(latestAbsentIds);
+    } catch (nextError) {
+      setError(`최신 결시 명단을 확인하지 못했습니다. ${messageFrom(nextError)}`);
+      return;
+    }
+    const sourceStudents = manualPool.length ? manualPool : students;
     const next = generateSeatAssignment({
-      students: manualPool.length ? manualPool : students,
+      students: sourceStudents,
       rows,
       cols,
       startSide,
       disabledSeats,
       mode,
       selectedIds,
-      absentIds,
+      absentIds: latestAbsentIds,
     });
     setResult(next);
     setError(next.error);
-    if (next.ok) setMessage("자리배치를 생성했습니다. 결시자 좌석은 유지됩니다.");
+    if (next.ok) {
+      setMessage(
+        mode === "own"
+          ? "응시자와 결시자를 앞에, 미응시자를 뒤에 배치했습니다."
+          : "학년 전체 명단에서 선택한 과목·호실 응시자를 배치했습니다.",
+      );
+    }
   }
 
   function toggleSeat(key) {
+    invalidateSeatResult();
     setDisabledSeats((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
+  }
+
+  function moveSeatFocus(event, index) {
+    const offsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols };
+    if (!(event.key in offsets)) return;
+    event.preventDefault();
+    const next = Math.min(rows * cols - 1, Math.max(0, index + offsets[event.key]));
+    seatEditorRef.current?.querySelector(`[data-seat-index="${next}"]`)?.focus();
+  }
+
+  function chartPayload() {
+    const classValue = mode === "own" ? classId : "";
+    const base = {
+      id: loadedChartId || undefined,
+      mode,
+      exam_date: examDate,
+      period,
+      grade,
+      class_id: classValue,
+      subject_name: subjectName,
+      room_name: roomName,
+      rows,
+      cols,
+      start_side: startSide,
+      disabled_seats: disabledSeats,
+      examinee_ids: selectedIds,
+      assignment: result.assignments.map((item) => ({
+        key: item.key,
+        student_id: item.student?.id || "",
+        absent: item.absent,
+      })),
+      updated_at: new Date().toISOString(),
+    };
+    if (!base.id) {
+      base.id = bootstrap.seat_charts.find((item) => seatChartKey(item) === seatChartKey(base))?.id;
+    }
+    return base;
   }
 
   async function saveChart() {
     if (!result.assignments.length) return setError("자리배치를 먼저 생성하세요.");
+    if (mode === "separate" && (!subjectName.trim() || !roomName.trim())) {
+      setError("별실 자리배치는 시간표 과목과 고사실을 모두 선택하세요.");
+      return;
+    }
     try {
-      const response = await apiRequest("save_seat_chart", {
-        chart: {
-          mode,
-          exam_date: examDate,
-          period,
-          grade: selectedClass?.grade || "",
-          class_id: classId,
-          subject_name: "",
-          room_name: roomName,
-          rows,
-          cols,
-          start_side: startSide,
-          disabled_seats: disabledSeats,
-          examinee_ids: selectedIds,
-          assignment: result.assignments.map((item) => ({
-            key: item.key,
-            student_id: item.student?.id || "",
-            absent: item.absent,
-          })),
-          updated_at: new Date().toISOString(),
-        },
-      });
+      const response = await apiRequest("save_seat_chart", { chart: chartPayload() });
       onBootstrap({ ...bootstrap, seat_charts: response.seat_charts });
-      setMessage("자리배치를 저장했습니다.");
+      setLoadedChartId(response.chart?.id || loadedChartId);
+      setMessage(response.updated_count
+        ? "같은 고사·과목·호실 자리배치를 최신 내용으로 갱신했습니다."
+        : "자리배치를 새로 저장했습니다.");
+      setError("");
     } catch (nextError) {
       setError(messageFrom(nextError));
     }
   }
 
   function loadChart(chart) {
+    setLoadedChartId(chart.id);
     setMode(chart.mode);
     setExamDate(chart.exam_date);
     setPeriod(Number(chart.period));
-    setClassId(chart.class_id);
-    setRoomName(chart.room_name);
-    setRows(Number(chart.rows));
-    setCols(Number(chart.cols));
-    setStartSide(chart.start_side);
+    setGrade(Number(chart.grade));
+    setClassId(chart.class_id || bootstrap.classes.find((item) => Number(item.grade) === Number(chart.grade))?.id || "");
+    setSubjectName(chart.subject_name || "");
+    setRoomName(chart.room_name || "");
+    setRows(Number(chart.rows || 6));
+    setCols(Number(chart.cols || 5));
+    setStartSide(chart.start_side || "window");
     setDisabledSeats(chart.disabled_seats || []);
     setSelectedIds(chart.examinee_ids || []);
     const studentMap = new Map(bootstrap.students.map((item) => [String(item.id), item]));
@@ -739,33 +1129,51 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         student: item.student_id ? studentMap.get(String(item.student_id)) : null,
       })),
     });
+    setMessage("저장된 자리배치를 불러왔습니다.");
   }
 
   async function deleteChart(chart) {
-    if (!window.confirm(`'${chart.room_name}' 자리배치를 삭제할까요?`)) return;
-    const response = await apiRequest("delete_seat_chart", { id: chart.id });
-    onBootstrap({ ...bootstrap, seat_charts: response.seat_charts });
+    if (!window.confirm(`'${chart.subject_name || "과목 미지정"} · ${chart.room_name}' 자리배치를 삭제할까요?`)) return;
+    try {
+      const response = await apiRequest("delete_seat_chart", { id: chart.id });
+      onBootstrap({ ...bootstrap, seat_charts: response.seat_charts });
+      if (loadedChartId === chart.id) setLoadedChartId("");
+    } catch (nextError) {
+      setError(messageFrom(nextError));
+    }
   }
 
   async function importManualList(file) {
     if (!file) return;
     try {
-      const rowsFromFile = normalizeManualSeatRows(await readWorkbookRows(file));
+      const analyzed = analyzeManualSeatRows(await readWorkbookRows(file));
+      if (analyzed.errors.length) {
+        throw new Error(importErrorMessage("수동 명단을 가져오지 않았습니다", analyzed.errors));
+      }
+      const rowsFromFile = analyzed.rows;
       const classByNumber = new Map(
-        bootstrap.classes
-          .filter((item) => Number(item.grade) === Number(selectedClass?.grade))
-          .map((item) => [Number(item.class_num), item]),
+        gradeClasses.map((item) => [Number(item.class_num), item]),
       );
+      const unmatched = [];
       const matched = rowsFromFile.map((row) => {
         const classInfo = classByNumber.get(Number(row.class_num));
-        return bootstrap.students.find((student) =>
+        const student = bootstrap.students.find((candidate) =>
           classInfo &&
-          String(student.class_id) === String(classInfo.id) &&
-          Number(student.number) === Number(row.number) &&
-          student.name === row.name
+          String(candidate.class_id) === String(classInfo.id) &&
+          Number(candidate.number) === Number(row.number) &&
+          candidate.name === row.name
         );
+        if (!student) {
+          unmatched.push({ row_number: row.row_number, code: "STUDENT_NOT_FOUND" });
+        }
+        return student;
       }).filter(Boolean);
+      if (unmatched.length) {
+        throw new Error(importErrorMessage("수동 명단을 가져오지 않았습니다", unmatched));
+      }
       if (!matched.length) throw new Error("학급·번호·이름이 등록 명단과 일치하는 학생이 없습니다.");
+      setLoadedChartId("");
+      setMode("separate");
       setManualPool(matched);
       setSelectedIds([...new Set(matched.map((item) => item.id))]);
       setMessage(`수동 명단에서 ${matched.length}명을 선택했습니다.`);
@@ -773,12 +1181,11 @@ function SeatPanel({ bootstrap, onBootstrap }) {
     } catch (nextError) {
       setError(messageFrom(nextError));
     } finally {
-      manualFileRef.current.value = "";
+      if (manualFileRef.current) manualFileRef.current.value = "";
     }
   }
 
   async function createElectiveBatch() {
-    const grade = Number(selectedClass?.grade);
     let batchAbsentIds = absentIds;
     try {
       const hq = await apiRequest("get_hq_status", { exam_date: examDate, period, grade, class_id: "" });
@@ -787,25 +1194,31 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       setError(messageFrom(nextError));
       return;
     }
-    const subjects = new Set(
-      bootstrap.timetable
-        .filter((item) =>
-          item.exam_date === examDate &&
-          Number(item.period) === Number(period) &&
-          Number(item.grade) === grade &&
-          item.subject_type === "elective"
-        )
-        .map((item) => item.subject_name),
+    const subjectRows = bootstrap.timetable.filter((item) =>
+      item.exam_date === examDate &&
+      Number(item.period) === Number(period) &&
+      Number(item.grade) === Number(grade) &&
+      item.subject_type === "elective"
     );
+    const subjectMap = new Map(subjectRows.map((item) => [item.subject_name, item]));
     const studentMap = new Map(bootstrap.students.map((item) => [String(item.id), item]));
     const groups = new Map();
     bootstrap.enrollments
-      .filter((item) => Number(item.grade) === grade && subjects.has(item.subject_name))
+      .filter((item) => Number(item.grade) === Number(grade) && subjectMap.has(item.subject_name))
       .forEach((item) => {
-        const key = `${item.subject_name}|${item.room_name || "별실"}`;
-        if (!groups.has(key)) groups.set(key, { subject_name: item.subject_name, room_name: item.room_name || "별실", students: [] });
+        const timetableItem = subjectMap.get(item.subject_name);
         const student = studentMap.get(String(item.student_id));
-        if (student) groups.get(key).students.push(student);
+        if (!student) return;
+        const effectiveRoom = resolveStudentRoom({
+          studentId: student.id,
+          subjectName: item.subject_name,
+          timetableItem,
+          enrollments: bootstrap.enrollments,
+          classInfo: classMap.get(String(student.class_id)),
+        }) || "별실";
+        const key = `${item.subject_name}|${effectiveRoom}`;
+        if (!groups.has(key)) groups.set(key, { subject_name: item.subject_name, room_name: effectiveRoom, students: [] });
+        groups.get(key).students.push(student);
       });
     if (!groups.size) {
       setError("선택한 고사일·교시·학년에 연결된 선택과목 응시자 명단이 없습니다.");
@@ -851,24 +1264,31 @@ function SeatPanel({ bootstrap, onBootstrap }) {
     try {
       const response = await apiRequest("save_seat_charts_batch", { charts });
       onBootstrap({ ...bootstrap, seat_charts: response.seat_charts });
-      setMessage(`선택과목·호실 기준 자리배치 ${charts.length}개를 일괄 생성해 저장했습니다.`);
+      setMessage(
+        `선택과목·호실 기준 자리배치: 신규 ${response.created_count || 0}개 · 갱신 ${response.updated_count || 0}개`,
+      );
       setError("");
     } catch (nextError) {
       setError(messageFrom(nextError));
     }
   }
 
+  const displayStudents = manualPool.length ? manualPool : students;
+  const scopeLabel = mode === "separate"
+    ? `${grade}학년 전체`
+    : selectedClass ? classLabel(selectedClass) : "";
+
   return (
     <section className="page-section">
       <SectionHeader
         eyebrow="SEATING PLAN"
         title="자리배치"
-        description="별실 또는 각자 교실 기준으로 좌석을 만들고 저장·불러오기·인쇄할 수 있습니다."
-        actions={<button className="button button-light" onClick={() => window.print()}><IconPrinter size={17} /> PDF·인쇄</button>}
+        description="별실은 학년 전체, 각자 교실은 학급 전체를 기준으로 6행×5열 좌석을 만듭니다."
+        actions={<button className="button button-light" onClick={() => window.print()} disabled={!result.assignments.length}><IconPrinter size={17} /> PDF·인쇄</button>}
       />
       <div className="segmented no-print">
-        <button className={mode === "separate" ? "active" : ""} onClick={() => setMode("separate")}><IconArmchair size={17} /> 별실 배치</button>
-        <button className={mode === "own" ? "active" : ""} onClick={() => setMode("own")}><IconLayoutGrid size={17} /> 각자 교실</button>
+        <button className={mode === "separate" ? "active" : ""} onClick={() => changeSeatContext(() => setMode("separate"))}><IconArmchair size={17} /> 별실 배치</button>
+        <button className={mode === "own" ? "active" : ""} onClick={() => changeSeatContext(() => setMode("own"))}><IconLayoutGrid size={17} /> 각자 교실</button>
       </div>
       <div className="seat-batch-actions no-print">
         <button className="button button-light" onClick={() => downloadWorkbook("자리배치 수동 명단 양식", { 수동명단: [["반", "번호", "이름"], [1, 1, "홍길동"]] })}><IconDownload size={17} /> 수동 명단 양식</button>
@@ -880,37 +1300,43 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       <div className="seat-layout">
         <aside className="seat-controls no-print">
           <div className="control-group">
-            <h3>1. 기본 정보</h3>
-            <label>고사일<select value={examDate} onChange={(event) => setExamDate(event.target.value)}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {item.exam_date}</option>)}</select></label>
+            <h3>1. 고사·과목·호실</h3>
+            <label>고사일<select value={examDate} onChange={(event) => changeSeatContext(() => setExamDate(event.target.value))}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {item.exam_date}</option>)}</select></label>
             <div className="two-fields">
-              <label>학급<select value={classId} onChange={(event) => setClassId(event.target.value)}>{bootstrap.classes.map((item) => <option key={item.id} value={item.id}>{classLabel(item)}</option>)}</select></label>
-              <label>교시<select value={period} onChange={(event) => setPeriod(Number(event.target.value))}>{PERIODS.map((item) => <option key={item}>{item}교시</option>)}</select></label>
+              {mode === "separate" ? (
+                <label>학년<select value={grade} onChange={(event) => changeSeatContext(() => setGrade(Number(event.target.value)))}>{[...new Set(bootstrap.classes.map((item) => Number(item.grade)))].map((item) => <option key={item}>{item}학년</option>)}</select></label>
+              ) : (
+                <label>학급<select value={classId} onChange={(event) => { const id = event.target.value; changeSeatContext(() => { setClassId(id); setGrade(Number(classMap.get(String(id))?.grade || grade)); }); }}>{bootstrap.classes.map((item) => <option key={item.id} value={item.id}>{classLabel(item)}</option>)}</select></label>
+              )}
+              <label>교시<select value={period} onChange={(event) => changeSeatContext(() => setPeriod(Number(event.target.value)))}>{PERIODS.map((item) => <option key={item} value={item}>{item}교시</option>)}</select></label>
             </div>
-            <label>고사실<input value={roomName} onChange={(event) => setRoomName(event.target.value)} /></label>
+            <label>과목<select value={subjectName} onChange={(event) => changeSeatContext(() => setSubjectName(event.target.value))}><option value="">과목 미지정</option>{timetableItems.map((item) => <option key={item.id || `${item.subject_name}-${item.subject_type}`} value={item.subject_name}>{item.subject_name} · {item.subject_type === "common" ? "공통" : "선택"}</option>)}</select></label>
+            <label>고사실<input list="seat-room-options" value={roomName} onChange={(event) => changeSeatContext(() => setRoomName(event.target.value))} placeholder="호실을 입력하세요" /></label>
+            <datalist id="seat-room-options">{roomOptions.map((item) => <option key={item} value={item} />)}</datalist>
           </div>
           <div className="control-group">
             <h3>2. 좌석 구성</h3>
             <div className="three-fields">
-              <label>행<input type="number" min="1" max="12" value={rows} onChange={(event) => setRows(Number(event.target.value))} /></label>
-              <label>열<input type="number" min="1" max="12" value={cols} onChange={(event) => setCols(Number(event.target.value))} /></label>
-              <label>시작<select value={startSide} onChange={(event) => setStartSide(event.target.value)}><option value="window">창가</option><option value="aisle">복도</option></select></label>
+              <label>행<input type="number" min="1" max="12" value={rows} onChange={(event) => { invalidateSeatResult(); setRows(Number(event.target.value)); }} /></label>
+              <label>열<input type="number" min="1" max="12" value={cols} onChange={(event) => { invalidateSeatResult(); setCols(Number(event.target.value)); }} /></label>
+              <label>시작<select value={startSide} onChange={(event) => { invalidateSeatResult(); setStartSide(event.target.value); }}><option value="window">창가</option><option value="aisle">복도</option></select></label>
             </div>
-            <p className="field-help">아래 격자에서 사용하지 않을 좌석을 눌러 제외하세요.</p>
-            <div className="mini-seat-grid" style={{ "--seat-cols": cols }}>
+            <p className="field-help">Enter·Space로 좌석을 제외하고 방향키로 좌석 사이를 이동할 수 있습니다.</p>
+            <div ref={seatEditorRef} className="mini-seat-grid" style={{ "--seat-cols": cols }}>
               {Array.from({ length: rows * cols }, (_, index) => {
                 const row = Math.floor(index / cols);
                 const col = index % cols;
                 const key = `${row}-${col}`;
-                return <button key={key} className={disabledSeats.includes(key) ? "disabled" : ""} onClick={() => toggleSeat(key)} aria-label={`${row + 1}행 ${col + 1}열 ${disabledSeats.includes(key) ? "복원" : "제외"}`}>{disabledSeats.includes(key) ? <IconX size={13} /> : index + 1}</button>;
+                return <button type="button" data-seat-index={index} key={key} className={disabledSeats.includes(key) ? "disabled" : ""} onKeyDown={(event) => moveSeatFocus(event, index)} onClick={() => toggleSeat(key)} aria-pressed={disabledSeats.includes(key)} aria-label={`${row + 1}행 ${col + 1}열 ${disabledSeats.includes(key) ? "복원" : "제외"}`}>{disabledSeats.includes(key) ? <IconX size={13} /> : index + 1}</button>;
               })}
             </div>
           </div>
           <div className="control-group">
             <h3>3. 응시자 선택 <span>{selectedIds.length}명</span></h3>
-            <div className="selection-actions"><button onClick={() => setSelectedIds((manualPool.length ? manualPool : students).map((item) => item.id))}>전체</button><button onClick={() => setSelectedIds([])}>해제</button></div>
+            <div className="selection-actions"><button onClick={() => { invalidateSeatResult(); setSelectedIds(displayStudents.map((item) => item.id)); }}>전체</button><button onClick={() => { invalidateSeatResult(); setSelectedIds([]); }}>해제</button></div>
             {manualPool.length ? <p className="manual-pool-note">수동 명단 {manualPool.length}명 선택됨</p> : null}
             <div className="check-list">
-              {students.map((student) => <label key={student.id}><input type="checkbox" checked={selectedIds.includes(student.id)} onChange={() => setSelectedIds((items) => items.includes(student.id) ? items.filter((id) => id !== student.id) : [...items, student.id])} /><span>{student.number}번 {student.name}</span>{absentIds.includes(student.id) ? <em>결시</em> : null}</label>)}
+              {displayStudents.map((student) => <label key={student.id}><input type="checkbox" checked={selectedIds.map(String).includes(String(student.id))} onChange={() => { invalidateSeatResult(); setSelectedIds((items) => items.map(String).includes(String(student.id)) ? items.filter((id) => String(id) !== String(student.id)) : [...items, student.id]); }} /><span>{mode === "separate" ? `${classLabel(classMap.get(String(student.class_id)))} ` : ""}{student.number}번 {student.name}</span>{absentIds.map(String).includes(String(student.id)) ? <em>결시</em> : null}</label>)}
             </div>
           </div>
           <button className="button button-primary button-wide" onClick={createChart}><IconArmchair size={18} /> 자리배치 생성</button>
@@ -919,10 +1345,10 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         <div className="seat-preview print-section">
           <div className="seat-title">
             <p>{formatKoreanDate(examDate)} · {period}교시</p>
-            <h3>{roomName} 자리배치표</h3>
-            <span>{selectedClass ? classLabel(selectedClass) : ""} · 응시 {selectedIds.length}명</span>
+            <h3>{subjectName || "과목 미지정"} · {roomName || "호실 미지정"}</h3>
+            <span>{scopeLabel} · 응시 {selectedIds.length}명 · {rows}행×{cols}열</span>
           </div>
-          <div className="teacher-desk">교탁</div>
+          <div className="room-orientation"><span className={startSide === "window" ? "active" : ""}>창가</span><strong>칠판 · 교탁</strong><span className={startSide === "aisle" ? "active" : ""}>복도</span></div>
           {result.assignments.length ? (
             <div className="seat-grid" style={{ "--seat-cols": cols }}>
               {Array.from({ length: rows * cols }, (_, index) => {
@@ -931,24 +1357,25 @@ function SeatPanel({ bootstrap, onBootstrap }) {
                 const key = `${row}-${col}`;
                 if (disabledSeats.includes(key)) return <div className="seat-hole" key={key} />;
                 const item = result.assignments.find((slot) => slot.key === key);
+                const studentClass = item?.student ? classMap.get(String(item.student.class_id)) : null;
                 return (
                   <div className={`seat ${item?.absent ? "seat-absent" : ""} ${!item?.student ? "seat-empty" : ""}`} key={key}>
                     <span>{row + 1}-{col + 1}</span>
-                    {item?.student ? <><strong>{item.student.number}번 {item.student.name}</strong>{item.absent ? <em>결시 · 자리 유지</em> : null}</> : <small>빈 좌석</small>}
+                    {item?.student ? <><strong>{mode === "separate" && studentClass ? `${studentClass.class_num}반 ` : ""}{item.student.number}번 {item.student.name}</strong>{item.absent ? <em>결시 · 자리 유지</em> : !item.selected && mode === "own" ? <small>미응시</small> : null}</> : <small>빈 좌석</small>}
                   </div>
                 );
               })}
             </div>
-          ) : <EmptyState icon={IconArmchair} title="아직 생성된 자리배치가 없습니다" description="응시자와 좌석 구성을 확인한 뒤 자리배치 생성을 누르세요." />}
-          {result.assignments.length ? <div className="seat-preview-actions no-print"><button className="button button-gold" onClick={saveChart}><IconDeviceFloppy size={17} /> 저장</button><button className="button button-light" onClick={() => window.print()}><IconPrinter size={17} /> 인쇄</button></div> : null}
+          ) : <EmptyState icon={IconArmchair} title="아직 생성된 자리배치가 없습니다" description="과목·호실·응시자와 좌석 구성을 확인한 뒤 자리배치를 만드세요." />}
+          {result.assignments.length ? <div className="seat-preview-actions no-print"><button className="button button-gold" onClick={saveChart}><IconDeviceFloppy size={17} /> 저장</button><button className="button button-light" onClick={() => window.print()}><IconPrinter size={17} /> PDF·인쇄</button></div> : null}
         </div>
       </div>
 
       <article className="panel-card saved-charts no-print">
         <div className="card-heading"><div><IconDeviceFloppy size={20} /><h3>저장된 자리배치</h3></div><span>{bootstrap.seat_charts.length}개</span></div>
         {bootstrap.seat_charts.length ? <div className="saved-list">{bootstrap.seat_charts.map((chart) => (
-          <div key={chart.id}><div><strong>{chart.room_name}</strong><span>{chart.exam_date} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label="삭제"><IconTrash size={17} /></button></div></div>
-        ))}</div> : <EmptyState icon={IconDeviceFloppy} title="저장된 배치가 없습니다" description="생성한 자리배치를 저장하면 이곳에서 다시 불러올 수 있습니다." />}
+          <div key={chart.id}><div><strong>{chart.subject_name || "과목 미지정"} · {chart.room_name}</strong><span>{chart.exam_date} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label={`${chart.room_name} 자리배치 삭제`}><IconTrash size={17} /></button></div></div>
+        ))}</div> : <EmptyState icon={IconDeviceFloppy} title="저장된 배치가 없습니다" description="같은 고사·과목·호실 조합은 중복 없이 최신 배치로 저장됩니다." />}
       </article>
     </section>
   );
@@ -962,6 +1389,8 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   const [classNum, setClassNum] = useState(1);
   const [selectedClassId, setSelectedClassId] = useState(selectFirst(bootstrap.classes));
   const [studentText, setStudentText] = useState("");
+  const [studentEdits, setStudentEdits] = useState({});
+  const [newStudent, setNewStudent] = useState({ number: "", name: "" });
   const [timetableDraft, setTimetableDraft] = useState({
     exam_date: selectFirst(bootstrap.exam_dates, "exam_date"),
     grade: 1,
@@ -971,8 +1400,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     subject_name: "",
     subject_type: "common",
     room_name: "",
+    class_ids: [],
   });
   const [personalStudentId, setPersonalStudentId] = useState(selectFirst(bootstrap.students));
+  const [printScope, setPrintScope] = useState("student");
+  const [printGrade, setPrintGrade] = useState(Number(bootstrap.classes[0]?.grade || 1));
+  const [printClassId, setPrintClassId] = useState(selectFirst(bootstrap.classes));
   const [cleanupDate, setCleanupDate] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -992,7 +1425,23 @@ function SetupPanel({ bootstrap, onBootstrap }) {
       .filter((item) => String(item.class_id) === String(selectedClassId))
       .sort((a, b) => Number(a.number) - Number(b.number));
     setStudentText(rows.map((item) => `${item.number}\t${item.name}`).join("\n"));
+    setStudentEdits(Object.fromEntries(rows.map((item) => [
+      String(item.id),
+      { number: item.number, name: item.name },
+    ])));
   }, [bootstrap.students, selectedClassId]);
+
+  useEffect(() => {
+    const available = bootstrap.classes
+      .filter((item) => Number(item.grade) === Number(timetableDraft.grade))
+      .map((item) => item.id);
+    setTimetableDraft((value) => ({
+      ...value,
+      class_ids: value.class_ids.filter((id) => available.includes(id)).length
+        ? value.class_ids.filter((id) => available.includes(id))
+        : available,
+    }));
+  }, [bootstrap.classes, timetableDraft.grade]);
 
   async function commit(action, payload, success) {
     setMessage("");
@@ -1010,38 +1459,170 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   async function addDate() {
     if (!newDate) return setError("고사일을 선택하세요.");
+    const existing = bootstrap.exam_dates.find((item) => item.exam_date === newDate);
     const next = [...bootstrap.exam_dates.filter((item) => item.exam_date !== newDate), {
-      id: makeId("date"), exam_date: newDate, label: newDateLabel.trim() || `${bootstrap.exam_dates.length + 1}일차`, active: true,
+      id: existing?.id || makeId("date"),
+      exam_date: newDate,
+      label: newDateLabel.trim() || existing?.label || `${bootstrap.exam_dates.length + 1}일차`,
+      active: true,
     }].sort((a, b) => a.exam_date.localeCompare(b.exam_date));
     if (await commit("save_exam_dates", { exam_dates: next }, "고사일을 저장했습니다.")) {
       setNewDate(""); setNewDateLabel("");
     }
   }
 
+  async function deleteExamDate(item) {
+    setMessage("");
+    setError("");
+    let preview;
+    try {
+      preview = await apiRequest("delete_exam_date", {
+        exam_date: item.exam_date,
+        preview_only: true,
+      });
+    } catch (nextError) {
+      setError(messageFrom(nextError));
+      return;
+    }
+    const impact = preview?.impact || {};
+    if (!window.confirm(
+      `${item.label || item.exam_date} 고사일을 삭제할까요?\n` +
+      `시간표 ${impact.timetable || 0}건, 결시 ${impact.absences || 0}건, 제출 ${impact.completions || 0}건, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
+    )) return;
+    await commit(
+      "delete_exam_date",
+      { exam_date: item.exam_date },
+      "고사일과 참조 데이터를 정리했습니다.",
+    );
+  }
+
   async function addClass() {
     const result = await commit("save_class", {
       class_item: { grade: Number(grade), class_num: Number(classNum), active: true },
     }, "학급을 저장했습니다.");
-    if (result?.classes?.length) setSelectedClassId(result.classes.at(-1).id);
+    if (result?.saved_class_id) setSelectedClassId(result.saved_class_id);
   }
 
   async function saveStudents() {
-    const students = studentText.split(/\r?\n/).map((line) => {
-      const [number, ...nameParts] = line.trim().split(/[\t, ]+/);
-      return { number: Number(number), name: nameParts.join(" ").trim() };
-    }).filter((item) => Number.isInteger(item.number) && item.number > 0 && item.name);
-    const unique = new Map(students.map((item) => [item.number, item]));
-    await commit("replace_students", { class_id: selectedClassId, students: [...unique.values()] }, `${unique.size}명의 학생 명단을 저장했습니다.`);
+    const students = [];
+    const errors = [];
+    const seen = new Set();
+    studentText.split(/\r?\n/).forEach((raw, index) => {
+      const line = raw.trim();
+      if (!line) return;
+      const [numberText, ...nameParts] = line.split(/[\t, ]+/);
+      const number = Number(numberText);
+      const name = nameParts.join(" ").trim();
+      if (!Number.isInteger(number) || number < 1 || !name) {
+        errors.push({ row_number: index + 1, code: "INVALID_STUDENT_ROW" });
+        return;
+      }
+      if (seen.has(number)) {
+        errors.push({ row_number: index + 1, code: "DUPLICATE_STUDENT_NUMBER" });
+        return;
+      }
+      seen.add(number);
+      students.push({ number, name });
+    });
+    if (errors.length) {
+      setError(importErrorMessage("명단을 저장하지 않았습니다", errors));
+      return;
+    }
+    if (!students.length) {
+      setError("학생 명단을 한 명 이상 입력하세요.");
+      return;
+    }
+    await commit(
+      "replace_students",
+      { class_id: selectedClassId, students },
+      `${students.length}명의 학생 명단을 저장했습니다.`,
+    );
+  }
+
+  async function saveStudent(studentId = "") {
+    const draft = studentId ? studentEdits[String(studentId)] : newStudent;
+    const number = Number(draft?.number);
+    const name = String(draft?.name || "").trim();
+    if (!selectedClassId || !Number.isInteger(number) || number < 1 || !name) {
+      setError("학생 번호와 이름을 확인하세요.");
+      return;
+    }
+    const result = await commit("save_student", {
+      student: {
+        id: studentId || undefined,
+        class_id: selectedClassId,
+        number,
+        name,
+      },
+    }, studentId ? "학생 정보를 수정했습니다." : "학생을 추가했습니다.");
+    if (result && !studentId) setNewStudent({ number: "", name: "" });
+  }
+
+  async function deleteStudent(student) {
+    setMessage("");
+    setError("");
+    let preview;
+    try {
+      preview = await apiRequest("delete_student", {
+        student_id: student.id,
+        preview_only: true,
+      });
+    } catch (nextError) {
+      setError(messageFrom(nextError));
+      return;
+    }
+    const impact = preview?.impact || {};
+    if (!window.confirm(
+      `${student.number}번 ${student.name} 학생을 비활성화할까요?\n` +
+      `선택과목 ${impact.enrollments || 0}건, 자리배치 ${impact.seat_charts || 0}건이 정리됩니다. ` +
+      `과거 결시 ${impact.absences || 0}건의 이름과 연결은 보존됩니다.`,
+    )) return;
+    await commit("delete_student", { student_id: student.id }, "학생을 비활성화했습니다.");
+  }
+
+  async function deleteClass() {
+    setMessage("");
+    setError("");
+    let preview;
+    try {
+      preview = await apiRequest("delete_class", {
+        class_id: selectedClassId,
+        preview_only: true,
+      });
+    } catch (nextError) {
+      setError(messageFrom(nextError));
+      return;
+    }
+    const impact = preview?.impact || {};
+    if (!window.confirm(
+      `이 학급을 삭제할까요?\n` +
+      `학생 ${impact.students || 0}명, 시간표 ${impact.timetable || 0}건, 선택과목 ${impact.enrollments || 0}건, ` +
+      `결시 ${impact.absences || 0}건, 제출 ${impact.completions || 0}건, 자리배치 ${impact.seat_charts || 0}건에 영향을 줍니다.\n` +
+      "학생과 학급은 비활성화해 과거 결시 기록 연결을 보존하고 운영 참조 자료만 정리합니다.",
+    )) return;
+    const result = await commit("delete_class", { class_id: selectedClassId }, "학급과 참조 데이터를 정리했습니다.");
+    if (result?.classes?.length) setSelectedClassId(result.classes[0].id);
   }
 
   async function importStudentFile(file) {
     if (!file) return;
     try {
-      const rows = normalizeStudentRows(await readWorkbookRows(file));
+      const analyzed = analyzeStudentRows(await readWorkbookRows(file));
+      if (analyzed.errors.length) {
+        throw new Error(importErrorMessage("학생 명단을 가져오지 않았습니다", analyzed.errors));
+      }
+      const rows = analyzed.rows;
       if (!rows.length) throw new Error("가져올 학생이 없습니다. 열 이름과 값 형식을 확인하세요.");
-      await commit("import_students", { rows }, `${rows.length}명의 학생을 가져왔습니다.`);
+      setMessage("");
+      setError("");
+      const result = await apiRequest("import_students", { rows });
+      onBootstrap({ ...bootstrap, ...result });
+      setMessage(`${rows.length}명의 학생을 가져왔습니다.`);
     } catch (nextError) {
-      setError(messageFrom(nextError));
+      const backendErrors = nextError?.details?.errors || [];
+      setError(backendErrors.length
+        ? importErrorMessage("학생 명단을 저장하지 않았습니다", backendErrors)
+        : messageFrom(nextError));
     } finally {
       studentFileRef.current.value = "";
     }
@@ -1049,12 +1630,19 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   async function addTimetable() {
     if (!timetableDraft.subject_name.trim()) return setError("과목명을 입력하세요.");
+    if (!timetableDraft.class_ids.length) return setError("적용 학급을 한 곳 이상 선택하세요.");
+    if (bootstrap.timetable.some((item) =>
+      item.exam_date === timetableDraft.exam_date &&
+      Number(item.grade) === Number(timetableDraft.grade) &&
+      Number(item.period) === Number(timetableDraft.period) &&
+      item.subject_name === timetableDraft.subject_name.trim()
+    )) return setError("같은 교시에 같은 과목명이 이미 등록되어 있습니다.");
     const next = [...bootstrap.timetable, {
       ...timetableDraft,
       id: makeId("timetable"),
       grade: Number(timetableDraft.grade),
       period: Number(timetableDraft.period),
-      class_ids: bootstrap.classes.filter((item) => Number(item.grade) === Number(timetableDraft.grade)).map((item) => item.id).join("|"),
+      class_ids: timetableDraft.class_ids.join("|"),
     }];
     if (await commit("save_timetable", { timetable: next }, "시간표 항목을 저장했습니다.")) {
       setTimetableDraft((value) => ({ ...value, subject_name: "", room_name: "" }));
@@ -1062,39 +1650,93 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   }
 
   async function removeTimetable(id) {
-    await commit("save_timetable", { timetable: bootstrap.timetable.filter((item) => item.id !== id) }, "시간표 항목을 삭제했습니다.");
+    const item = bootstrap.timetable.find((row) => String(row.id) === String(id));
+    if (!item) return;
+    setMessage("");
+    setError("");
+    let preview;
+    try {
+      preview = await apiRequest("delete_timetable", { id, preview_only: true });
+    } catch (nextError) {
+      setError(messageFrom(nextError));
+      return;
+    }
+    const impact = preview?.impact || {};
+    const enrollmentText = impact.remove_subject_enrollments
+      ? `이 과목의 선택과목 등록 ${impact.enrollments || 0}건`
+      : "다른 시간표에서 같은 과목을 사용하므로 선택과목 등록은 유지";
+    if (!window.confirm(
+      `${item.exam_date} ${item.period}교시 '${item.subject_name}' 시간표를 삭제할까요?\n` +
+      `${enrollmentText}, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
+    )) return;
+    await commit("delete_timetable", { id }, "시간표와 참조 데이터를 정리했습니다.");
   }
 
   async function importEnrollmentFile(file) {
     if (!file) return;
     try {
-      const raw = normalizeEnrollmentRows(await readWorkbookRows(file));
+      const analyzed = analyzeEnrollmentRows(await readWorkbookRows(file));
+      if (analyzed.errors.length) {
+        throw new Error(importErrorMessage("선택과목 명단을 가져오지 않았습니다", analyzed.errors));
+      }
+      const raw = analyzed.rows;
       const targetGrade = Number(timetableDraft.grade);
-      const classMap = new Map(bootstrap.classes.filter((item) => Number(item.grade) === targetGrade).map((item) => [Number(item.class_num), item]));
-      const studentMap = new Map(bootstrap.students.map((item) => [`${item.class_id}|${Number(item.number)}`, item]));
-      const enrollments = raw.map((row) => {
-        const classInfo = classMap.get(Number(row.class_num));
-        const student = classInfo ? studentMap.get(`${classInfo.id}|${Number(row.number)}`) : null;
-        if (!classInfo || !student || student.name !== row.name) return null;
-        return { id: makeId("enrollment"), grade: targetGrade, class_id: classInfo.id, student_id: student.id, subject_name: row.subject_name, room_name: row.room_name };
-      }).filter(Boolean);
-      if (!enrollments.length) throw new Error("학급·번호·이름이 학생 명단과 일치하는 선택과목 행이 없습니다.");
-      await commit("save_enrollments", { grade: targetGrade, enrollments }, `${enrollments.length}건의 선택과목을 저장했습니다.`);
+      if (!raw.length) throw new Error("가져올 선택과목 행이 없습니다. 열 이름과 값 형식을 확인하세요.");
+      setMessage("");
+      setError("");
+      const result = await apiRequest("save_enrollments", {
+        grade: targetGrade,
+        enrollments: raw,
+      });
+      onBootstrap({ ...bootstrap, ...result });
+      const importResult = result?.enrollment_result;
+      if (importResult) {
+        setMessage(`선택과목 ${importResult.matched_count}건을 저장했습니다.`);
+      }
     } catch (nextError) {
-      setError(messageFrom(nextError));
+      const backendErrors = nextError?.details?.errors || [];
+      setError(backendErrors.length
+        ? importErrorMessage("선택과목 명단을 저장하지 않았습니다", backendErrors)
+        : messageFrom(nextError));
     } finally {
       enrollmentFileRef.current.value = "";
     }
   }
 
-  const personalStudent = bootstrap.students.find((item) => String(item.id) === String(personalStudentId));
-  const personalClass = bootstrap.classes.find((item) => String(item.id) === String(personalStudent?.class_id));
-  const personalRows = buildPersonalTimetable({
-    student: personalStudent,
-    classInfo: personalClass,
-    timetable: bootstrap.timetable,
-    enrollments: bootstrap.enrollments,
+  const printStudents = sortStudents(bootstrap.students.filter((student) => {
+    if (printScope === "student") return String(student.id) === String(personalStudentId);
+    if (printScope === "class") return String(student.class_id) === String(printClassId);
+    const classInfo = bootstrap.classes.find((item) => String(item.id) === String(student.class_id));
+    return Number(classInfo?.grade) === Number(printGrade);
+  }));
+  const personalSheets = printStudents.map((student) => {
+    const classInfo = bootstrap.classes.find((item) => String(item.id) === String(student.class_id));
+    return {
+      student,
+      classInfo,
+      rows: buildPersonalTimetable({
+        student,
+        classInfo,
+        timetable: bootstrap.timetable,
+        enrollments: bootstrap.enrollments,
+      }),
+    };
   });
+
+  const enrollmentRows = bootstrap.enrollments.filter(
+    (item) => Number(item.grade) === Number(timetableDraft.grade),
+  );
+  const enrollmentSummary = [...enrollmentRows.reduce((map, item) => {
+    const room = item.room_name || bootstrap.timetable.find(
+      (row) =>
+        Number(row.grade) === Number(item.grade) &&
+        row.subject_name === item.subject_name,
+    )?.room_name || "미지정";
+    const key = `${item.subject_name}|${room}`;
+    if (!map.has(key)) map.set(key, { subject_name: item.subject_name, room_name: room, count: 0 });
+    map.get(key).count += 1;
+    return map;
+  }, new Map()).values()];
 
   async function cleanup() {
     if (!cleanupDate) return setError("정리 기준일을 선택하세요.");
@@ -1128,7 +1770,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 <label>표시 이름<input value={newDateLabel} onChange={(event) => setNewDateLabel(event.target.value)} placeholder="예: 1일차" /></label>
                 <button className="button button-secondary" onClick={addDate}><IconPlus size={17} /> 추가</button>
               </div>
-              <div className="item-list">{bootstrap.exam_dates.map((item) => <div key={item.id}><div><strong>{item.label}</strong><span>{formatKoreanDate(item.exam_date)}</span></div><button className="icon-button danger" onClick={() => commit("save_exam_dates", { exam_dates: bootstrap.exam_dates.filter((date) => date.id !== item.id) }, "고사일을 삭제했습니다.")}><IconTrash size={17} /></button></div>)}</div>
+              <div className="item-list">{bootstrap.exam_dates.map((item) => <div key={item.id}><div><strong>{item.label}</strong><span>{formatKoreanDate(item.exam_date)}</span></div><button className="icon-button danger" onClick={() => deleteExamDate(item)} aria-label={`${item.label} 고사일 삭제`}><IconTrash size={17} /></button></div>)}</div>
             </article>
           ) : null}
 
@@ -1149,7 +1791,28 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 </label>
                 <div className="button-row">
                   <button className="button button-primary" onClick={saveStudents}><IconDeviceFloppy size={17} /> 명단 저장</button>
-                  <button className="button button-danger" onClick={() => window.confirm("학급과 소속 학생을 모두 삭제할까요?") && commit("delete_class", { class_id: selectedClassId }, "학급을 삭제했습니다.")}><IconTrash size={17} /> 학급 삭제</button>
+                  <button className="button button-danger" onClick={deleteClass}><IconTrash size={17} /> 영향 확인 후 학급 삭제</button>
+                </div>
+                <div className="student-admin">
+                  <div className="card-heading"><div><IconUserCheck size={19} /><h3>학생 개별 수정</h3></div><span>명단 교체 시 같은 번호의 ID 유지</span></div>
+                  <div className="student-admin-new">
+                    <label>번호<input type="number" min="1" value={newStudent.number} onChange={(event) => setNewStudent({ ...newStudent, number: event.target.value })} /></label>
+                    <label>이름<input value={newStudent.name} onChange={(event) => setNewStudent({ ...newStudent, name: event.target.value })} /></label>
+                    <button className="button button-secondary" onClick={() => saveStudent()}><IconPlus size={17} /> 학생 추가</button>
+                  </div>
+                  <div className="student-edit-list">
+                    {bootstrap.students.filter((item) => String(item.class_id) === String(selectedClassId)).map((student) => {
+                      const draft = studentEdits[String(student.id)] || student;
+                      return (
+                        <div key={student.id}>
+                          <input aria-label={`${student.name} 번호`} type="number" min="1" value={draft.number} onChange={(event) => setStudentEdits((value) => ({ ...value, [student.id]: { ...draft, number: event.target.value } }))} />
+                          <input aria-label={`${student.number}번 이름`} value={draft.name} onChange={(event) => setStudentEdits((value) => ({ ...value, [student.id]: { ...draft, name: event.target.value } }))} />
+                          <button className="button button-light" onClick={() => saveStudent(student.id)}><IconDeviceFloppy size={16} /> 수정</button>
+                          <button className="icon-button danger" onClick={() => deleteStudent(student)} aria-label={`${student.name} 삭제`}><IconTrash size={16} /></button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </> : null}
             </article>
@@ -1168,8 +1831,26 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 <label className="span-two">과목명<input value={timetableDraft.subject_name} onChange={(event) => setTimetableDraft({ ...timetableDraft, subject_name: event.target.value })} /></label>
                 <label>기본 호실<input value={timetableDraft.room_name} onChange={(event) => setTimetableDraft({ ...timetableDraft, room_name: event.target.value })} /></label>
               </div>
+              <fieldset className="class-scope">
+                <legend>적용 학급</legend>
+                {bootstrap.classes.filter((item) => Number(item.grade) === Number(timetableDraft.grade)).map((item) => (
+                  <label key={item.id}>
+                    <input
+                      type="checkbox"
+                      checked={timetableDraft.class_ids.includes(item.id)}
+                      onChange={() => setTimetableDraft((value) => ({
+                        ...value,
+                        class_ids: value.class_ids.includes(item.id)
+                          ? value.class_ids.filter((id) => id !== item.id)
+                          : [...value.class_ids, item.id],
+                      }))}
+                    />
+                    {classLabel(item)}
+                  </label>
+                ))}
+              </fieldset>
               <button className="button button-secondary" onClick={addTimetable}><IconPlus size={17} /> 시간표 추가</button>
-              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{item.exam_date}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
+              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th>적용 학급</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{item.exam_date}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td>{String(item.class_ids || "").split(/[|,]/).filter(Boolean).map((id) => classLabel(bootstrap.classes.find((row) => String(row.id) === String(id)))).join(", ") || "학년 전체"}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)} aria-label={`${item.subject_name} 삭제`}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
             </article>
           ) : null}
 
@@ -1183,18 +1864,50 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 <input ref={enrollmentFileRef} className="sr-only" type="file" accept=".xlsx,.xls" onChange={(event) => importEnrollmentFile(event.target.files?.[0])} />
               </div>
               <div className="metric-grid compact"><article><span>등록 건수</span><strong>{bootstrap.enrollments.filter((item) => Number(item.grade) === Number(timetableDraft.grade)).length}<small>건</small></strong></article><article><span>선택과목 수</span><strong>{new Set(bootstrap.enrollments.filter((item) => Number(item.grade) === Number(timetableDraft.grade)).map((item) => item.subject_name)).size}<small>개</small></strong></article></div>
+              {enrollmentSummary.length ? (
+                <>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>과목</th><th>호실</th><th>응시자</th></tr></thead>
+                      <tbody>{enrollmentSummary.map((item) => <tr key={`${item.subject_name}-${item.room_name}`}><td>{item.subject_name}</td><td>{item.room_name}</td><td>{item.count}명</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                  <details className="enrollment-details">
+                    <summary>등록 결과 상세 보기</summary>
+                    <div className="table-wrap">
+                      <table>
+                        <thead><tr><th>과목</th><th>학급</th><th>번호</th><th>이름</th><th>호실</th></tr></thead>
+                        <tbody>{enrollmentRows.map((item) => {
+                          const student = bootstrap.students.find((row) => String(row.id) === String(item.student_id));
+                          const classInfo = bootstrap.classes.find((row) => String(row.id) === String(item.class_id));
+                          const defaultRoom = bootstrap.timetable.find((row) => Number(row.grade) === Number(item.grade) && row.subject_name === item.subject_name)?.room_name;
+                          return <tr key={item.id || `${item.student_id}-${item.subject_name}`}><td>{item.subject_name}</td><td>{classLabel(classInfo)}</td><td>{student?.number}</td><td>{student?.name}</td><td>{item.room_name || defaultRoom || "미지정"}</td></tr>;
+                        })}</tbody>
+                      </table>
+                    </div>
+                  </details>
+                </>
+              ) : <EmptyState icon={IconBook} title="등록된 선택과목 응시자가 없습니다" description="엑셀 양식에 과목·반·번호·이름·호실을 작성해 가져오세요." />}
             </article>
           ) : null}
 
           {active === "print" ? (
             <article className="panel-card print-section">
-              <div className="card-heading no-print"><div><IconPrinter size={20} /><h3>학생별 개인 시간표</h3></div><button className="button button-light" onClick={() => window.print()}><IconPrinter size={17} /> 인쇄</button></div>
-              <label className="no-print">학생<select value={personalStudentId} onChange={(event) => setPersonalStudentId(event.target.value)}>{bootstrap.classes.map((classInfo) => <optgroup key={classInfo.id} label={classLabel(classInfo)}>{bootstrap.students.filter((item) => item.class_id === classInfo.id).map((student) => <option key={student.id} value={student.id}>{student.number}번 {student.name}</option>)}</optgroup>)}</select></label>
-              <div className="personal-sheet">
-                <p>PERSONAL EXAM SCHEDULE</p><h3>개인 고사 시간표</h3>
-                <div className="student-meta"><span>{personalClass ? classLabel(personalClass) : ""}</span><strong>{personalStudent?.number}번 {personalStudent?.name}</strong></div>
-                <table><thead><tr><th>고사일</th><th>교시</th><th>시간</th><th>과목</th><th>고사실</th></tr></thead><tbody>{personalRows.map((row) => <tr key={`${row.exam_date}-${row.period}`}><td>{formatKoreanDate(row.exam_date)}</td><td>{row.period}</td><td>{row.time}</td><td>{row.subject_name}</td><td>{row.room_name}</td></tr>)}</tbody></table>
+              <div className="card-heading no-print"><div><IconPrinter size={20} /><h3>학생별 개인 시간표</h3></div><button className="button button-light" onClick={() => window.print()} disabled={!personalSheets.length}><IconPrinter size={17} /> A4 일괄 인쇄</button></div>
+              <div className="print-scope no-print">
+                <label>출력 범위<select value={printScope} onChange={(event) => setPrintScope(event.target.value)}><option value="student">학생 1명</option><option value="class">특정 학급 전체</option><option value="grade">학년 전체</option></select></label>
+                {printScope === "student" ? <label>학생<select value={personalStudentId} onChange={(event) => setPersonalStudentId(event.target.value)}>{bootstrap.classes.map((classInfo) => <optgroup key={classInfo.id} label={classLabel(classInfo)}>{bootstrap.students.filter((item) => item.class_id === classInfo.id).map((student) => <option key={student.id} value={student.id}>{student.number}번 {student.name}</option>)}</optgroup>)}</select></label> : null}
+                {printScope === "class" ? <label>학급<select value={printClassId} onChange={(event) => setPrintClassId(event.target.value)}>{bootstrap.classes.map((item) => <option key={item.id} value={item.id}>{classLabel(item)}</option>)}</select></label> : null}
+                {printScope === "grade" ? <label>학년<select value={printGrade} onChange={(event) => setPrintGrade(Number(event.target.value))}>{[...new Set(bootstrap.classes.map((item) => Number(item.grade)))].map((item) => <option key={item}>{item}학년</option>)}</select></label> : null}
+                <p>{personalSheets.length}명의 시간표를 각각 A4 한 장으로 출력합니다.</p>
               </div>
+              {personalSheets.map(({ student, classInfo, rows: scheduleRows }) => (
+                <div className="personal-sheet" key={student.id}>
+                  <p>PERSONAL EXAM SCHEDULE</p><h3>개인 고사 시간표</h3>
+                  <div className="student-meta"><span>{classLabel(classInfo)}</span><strong>{student.number}번 {student.name}</strong></div>
+                  <table><thead><tr><th>고사일</th><th>교시</th><th>시간</th><th>과목</th><th>고사실</th></tr></thead><tbody>{scheduleRows.map((row) => <tr key={`${row.exam_date}-${row.period}`}><td>{formatKoreanDate(row.exam_date)}</td><td>{row.period}</td><td>{row.time}</td><td>{row.subject_name}</td><td>{row.room_name}</td></tr>)}</tbody></table>
+                </div>
+              ))}
             </article>
           ) : null}
 
@@ -1231,6 +1944,30 @@ export function App() {
         }
       });
   }, [loggedIn, admin]);
+
+  useEffect(() => {
+    const handleExpired = (event) => {
+      if (event.detail?.code === "ADMIN_SESSION_EXPIRED") {
+        setAdmin(false);
+        setActiveTab("absence");
+        setBootstrap((current) => ({
+          ...EMPTY_BOOTSTRAP,
+          settings: current.settings,
+          classes: current.classes,
+          exam_dates: current.exam_dates,
+        }));
+        setStartupError("관리자 세션이 만료되었습니다. 관리자 화면을 열 때 암호를 다시 입력하세요.");
+        return;
+      }
+      setLoggedIn(false);
+      setAdmin(false);
+      setActiveTab("absence");
+      setBootstrap(EMPTY_BOOTSTRAP);
+      setStartupError("세션이 만료되었습니다. 학교코드로 다시 접속하세요.");
+    };
+    window.addEventListener("exam-session-expired", handleExpired);
+    return () => window.removeEventListener("exam-session-expired", handleExpired);
+  }, []);
 
   useEffect(() => {
     if (!loggedIn) return undefined;
