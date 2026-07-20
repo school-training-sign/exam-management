@@ -84,8 +84,8 @@ PENDING FINAL BROWSER VERIFICATION
 
 ## Automated QA
 
-- 프런트 단위 테스트 18개 통과
-- Apps Script 계약·보안 테스트 16개 통과
+- 프런트 단위 테스트 19개 통과
+- Apps Script 계약·보안 테스트 17개 통과
 - 공개 파일 21개 정적 보안 검사 통과
 - 25개 동일 재시도 요청의 중복 커밋 방지 시뮬레이션 통과
 - Vite 프로덕션 빌드 통과

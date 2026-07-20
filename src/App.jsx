@@ -34,6 +34,7 @@ import {
   buildPersonalTimetable,
   classLabel,
   formatKoreanDate,
+  formatPresenceLabel,
   generateSeatAssignment,
   makeId,
   resolveStudentRoom,
@@ -1932,6 +1933,8 @@ export function App() {
   const [adminDialog, setAdminDialog] = useState(false);
   const [pendingTab, setPendingTab] = useState("");
   const [startupError, setStartupError] = useState("");
+  const [presence, setPresence] = useState({ status: "connecting", onlineCount: 0 });
+  const lastActivityAtRef = useRef(Date.now());
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -1970,11 +1973,84 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!loggedIn) {
+      setPresence({ status: "connecting", onlineCount: 0 });
+      return undefined;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+    let timer;
+    const ping = async () => {
+      if (cancelled || inFlight || document.visibilityState === "hidden") return;
+      if (navigator.onLine === false) {
+        setPresence((current) => ({ ...current, status: "disconnected" }));
+        return;
+      }
+      inFlight = true;
+      setPresence((current) => ({
+        ...current,
+        status: current.status === "connected" ? "connected" : "connecting",
+      }));
+      try {
+        const result = await apiRequest("presence_ping", {
+          user_active: Date.now() - lastActivityAtRef.current < 35_000,
+        });
+        if (!cancelled) {
+          setPresence({
+            status: result.connected === false ? "disconnected" : "connected",
+            onlineCount: Math.max(0, Number(result.online_count) || 0),
+          });
+        }
+      } catch (error) {
+        if (!cancelled && hasSchoolSession()) {
+          setPresence((current) => ({ ...current, status: "disconnected" }));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const schedule = () => {
+      clearTimeout(timer);
+      if (cancelled || document.visibilityState === "hidden" || navigator.onLine === false) return;
+      const jitter = Math.floor(Math.random() * 8_001) - 4_000;
+      timer = setTimeout(tick, 30_000 + jitter);
+    };
+    const tick = async () => {
+      await ping();
+      schedule();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+      else clearTimeout(timer);
+    };
+    const handleOnline = () => tick();
+    const handleOffline = () => {
+      clearTimeout(timer);
+      setPresence((current) => ({ ...current, status: "disconnected" }));
+    };
+
+    tick();
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [loggedIn]);
+
+  useEffect(() => {
     if (!loggedIn) return undefined;
     let timer;
     const reset = () => {
+      lastActivityAtRef.current = Date.now();
       clearTimeout(timer);
       timer = setTimeout(() => {
+        apiRequest("logout").catch(() => {});
         clearSessions();
         setLoggedIn(false);
         setAdmin(false);
@@ -2024,6 +2100,15 @@ export function App() {
         <div className="header-inner">
           <div className="header-brand"><span><IconBook size={22} /></span><div><strong>{bootstrap.settings.app_name || "정기고사 관리 시스템"}</strong><small>{bootstrap.settings.school_name || "학교 고사 운영"}</small></div></div>
           <div className="header-actions">
+            <span
+              className={`connection-badge ${presence.status}`}
+              role="status"
+              aria-live="polite"
+              title="현재 화면을 제외한 최근 90초 이내 다른 활성 화면 수"
+            >
+              <span className="connection-dot" aria-hidden="true" />
+              {formatPresenceLabel(presence.status, presence.onlineCount)}
+            </span>
             <span className={`mode-badge ${appMode.demo ? "demo" : ""}`}>{appMode.name}</span>
             {admin ? <span className="admin-badge"><IconShieldLock size={14} /> 관리자</span> : null}
             <button className="icon-button header-logout" onClick={logout} aria-label="로그아웃"><IconLogout size={19} /></button>

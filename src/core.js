@@ -12,6 +12,15 @@ export function makeId(prefix = "id") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function formatPresenceLabel(status = "connecting", onlineCount = 0) {
+  if (status === "connected") {
+    const count = Math.max(0, Math.floor(Number(onlineCount) || 0));
+    return `연결됨, ${count}명 접속`;
+  }
+  if (status === "disconnected") return "연결 끊김";
+  return "연결 확인 중";
+}
+
 export function classLabel(item) {
   return item ? `${Number(item.grade)}학년 ${Number(item.class_num)}반` : "";
 }

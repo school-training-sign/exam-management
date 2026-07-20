@@ -9,6 +9,7 @@ import {
   buildPersonalTimetable,
   buildSeatSlots,
   filterAbsences,
+  formatPresenceLabel,
   generateSeatAssignment,
   normalizeEnrollmentRows,
   normalizeManualSeatRows,
@@ -17,6 +18,13 @@ import {
   seatChartKey,
   summarizeAbsences,
 } from "../src/core.js";
+
+test("상단 연결 상태는 현재 화면을 제외한 활성 접속자 수를 표시한다", () => {
+  assert.equal(formatPresenceLabel("connected", 0), "연결됨, 0명 접속");
+  assert.equal(formatPresenceLabel("connected", 2.9), "연결됨, 2명 접속");
+  assert.equal(formatPresenceLabel("connecting", 0), "연결 확인 중");
+  assert.equal(formatPresenceLabel("disconnected", 3), "연결 끊김");
+});
 
 test("학생 명단 헤더를 인식하고 중복 번호를 제거한다", () => {
   const rows = normalizeStudentRows([

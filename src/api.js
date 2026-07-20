@@ -19,6 +19,7 @@ const CLIENT_ID_KEY = "exam-management:client-id";
 // Keep the browser deadline comfortably above that ceiling so a request cannot
 // be aborted while the server is still waiting to commit it.
 const REQUEST_TIMEOUT_MS = 45_000;
+const PRESENCE_TIMEOUT_MS = 8_000;
 const TRANSIENT_CODES = new Set(["NETWORK_ERROR", "TIMEOUT", "LOCK_TIMEOUT", "BUSY", "TEMPORARY_ERROR"]);
 const SESSION_CODES = new Set(["SESSION_EXPIRED", "INVALID_SESSION", "ADMIN_SESSION_EXPIRED"]);
 
@@ -115,6 +116,16 @@ class DemoRepository {
 
       case "get_admin_bootstrap":
         return this.adminBootstrap();
+
+      case "presence_ping":
+        return {
+          connected: true,
+          online_count: 0,
+          observed_at: new Date().toISOString(),
+          active_window_seconds: 90,
+          approximate: true,
+          stale: false,
+        };
 
       case "get_absence_context": {
         const students = sortStudents(
@@ -742,13 +753,15 @@ class AppsScriptRepository {
       client_id: getClientId(),
       request_id: payload.request_id || crypto.randomUUID?.() || makeId("request"),
     };
-    const delays = [0, 300, 900];
+    const presenceRequest = action === "presence_ping";
+    const delays = presenceRequest ? [0] : [0, 300, 900];
+    const timeoutMs = presenceRequest ? PRESENCE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
     let lastError;
 
     for (const delay of delays) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const response = await fetch(this.apiUrl, {
           method: "POST",
