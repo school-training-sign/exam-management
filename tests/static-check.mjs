@@ -34,6 +34,24 @@ for (const [label, pattern] of forbidden) {
   }
 }
 const config = fs.readFileSync(path.join(root, "public", "assets", "config.js"), "utf8");
+const appSource = fs.readFileSync(path.join(root, "src", "App.jsx"), "utf8");
+const demoSource = fs.readFileSync(path.join(root, "src", "demo-data.js"), "utf8");
+const decorativeEnglish = [
+  "SCHOOL EXAM OPERATIONS",
+  "ADMIN ACCESS",
+  "TEACHER DESK",
+  "EXAM HEADQUARTERS",
+  "SEATING PLAN",
+  "ADMIN SETTINGS",
+  "PERSONAL EXAM SCHEDULE",
+];
+for (const phrase of decorativeEnglish) {
+  if (appSource.includes(phrase)) failures.push(`장식용 영문 문구가 남아 있습니다: ${phrase}`);
+}
+if (appSource.includes('className="eyebrow"')) failures.push("장식용 영문 요소가 남아 있습니다.");
+if (!demoSource.includes('school_name: "한양대학교사범대학부속고등학교"')) {
+  failures.push("데모 학교명이 정식 학교명과 일치하지 않습니다.");
+}
 const apiUrl = config.match(/API_URL:\s*["']([^"']*)["']/)?.[1] || "";
 const validPlaceholder = apiUrl === "__APPS_SCRIPT_WEB_APP_URL__";
 const validDeployment = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(apiUrl);

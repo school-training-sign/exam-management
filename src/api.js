@@ -92,6 +92,141 @@ function parseClassIds(value) {
   return value.split(/[|,]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function normalizeDemoSubjectCatalog(gradeValue, subjectsValue) {
+  const grade = Number(gradeValue);
+  if (!Number.isInteger(grade) || grade < 1 || grade > 9) {
+    throw new ApiError("학년을 확인하세요.", { code: "INVALID_GRADE" });
+  }
+  if (!Array.isArray(subjectsValue)) {
+    throw new ApiError("교과목 목록 형식이 올바르지 않습니다.", { code: "INVALID_SUBJECTS" });
+  }
+  if (subjectsValue.length > 200) {
+    throw new ApiError("교과목은 한 학년에 200개까지 등록할 수 있습니다.", {
+      code: "TOO_MANY_SUBJECTS",
+    });
+  }
+
+  const seen = new Set();
+  const subjects = subjectsValue.map((value) => {
+    if (typeof value !== "string") {
+      throw new ApiError("교과목 이름 형식이 올바르지 않습니다.", {
+        code: "INVALID_SUBJECT_NAME",
+      });
+    }
+    const subject = value.trim();
+    if (!subject || subject.length > 80) {
+      throw new ApiError("교과목 이름은 1자 이상 80자 이하로 입력하세요.", {
+        code: "INVALID_SUBJECT_NAME",
+      });
+    }
+    if (seen.has(subject)) {
+      throw new ApiError(`중복된 교과목이 있습니다: ${subject}`, {
+        code: "DUPLICATE_SUBJECT",
+      });
+    }
+    seen.add(subject);
+    return subject;
+  });
+
+  return { grade, subjects };
+}
+
+function isValidIsoDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+}
+
+function normalizeDemoExamNotice(noticeValue) {
+  if (!noticeValue || typeof noticeValue !== "object" || Array.isArray(noticeValue)) {
+    throw new ApiError("가정통신문 설정 형식이 올바르지 않습니다.", {
+      code: "INVALID_EXAM_NOTICE",
+    });
+  }
+
+  const year = Number(noticeValue.year);
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) {
+    throw new ApiError("학년도를 확인하세요.", { code: "INVALID_ACADEMIC_YEAR" });
+  }
+
+  const semester = Number(noticeValue.semester);
+  if (semester !== 1 && semester !== 2) {
+    throw new ApiError("학기는 1학기 또는 2학기로 입력하세요.", {
+      code: "INVALID_SEMESTER",
+    });
+  }
+
+  const examName = String(noticeValue.exam_name || "").trim();
+  if (!examName) {
+    throw new ApiError("고사명을 입력하세요.", { code: "EXAM_NAME_REQUIRED" });
+  }
+  if (examName.length > 80) {
+    throw new ApiError("고사명은 80자 이하로 입력하세요.", {
+      code: "INVALID_EXAM_NAME",
+    });
+  }
+
+  const greeting = String(noticeValue.greeting || "").trim();
+  if (greeting.length > 1500) {
+    throw new ApiError("인사말은 1,500자 이하로 입력하세요.", {
+      code: "INVALID_GREETING",
+    });
+  }
+
+  if (!Array.isArray(noticeValue.notes) || noticeValue.notes.length > 20) {
+    throw new ApiError("안내사항은 20개 이하의 목록으로 입력하세요.", {
+      code: "INVALID_NOTICE_NOTES",
+    });
+  }
+  const notes = noticeValue.notes.map((value) => {
+    if (typeof value !== "string") {
+      throw new ApiError("안내사항 형식이 올바르지 않습니다.", {
+        code: "INVALID_NOTICE_NOTE",
+      });
+    }
+    const note = value.trim();
+    if (!note || note.length > 200) {
+      throw new ApiError("안내사항은 항목마다 1자 이상 200자 이하로 입력하세요.", {
+        code: "INVALID_NOTICE_NOTE",
+      });
+    }
+    return note;
+  });
+
+  const issueDate = String(noticeValue.issue_date || "").trim();
+  if (issueDate && !isValidIsoDate(issueDate)) {
+    throw new ApiError("발행일을 확인하세요.", { code: "INVALID_ISSUE_DATE" });
+  }
+
+  const issuer = String(noticeValue.issuer || "").trim();
+  if (!issuer) {
+    throw new ApiError("발행 명의를 입력하세요.", {
+      code: "NOTICE_ISSUER_REQUIRED",
+    });
+  }
+  if (issuer.length > 100) {
+    throw new ApiError("발행 명의는 100자 이하로 입력하세요.", {
+      code: "INVALID_NOTICE_ISSUER",
+    });
+  }
+
+  return {
+    year,
+    semester,
+    exam_name: examName,
+    greeting,
+    notes,
+    issue_date: issueDate,
+    issuer,
+  };
+}
+
 class DemoRepository {
   constructor() {
     this.state = createDemoState();
@@ -523,6 +658,22 @@ class DemoRepository {
         return this.adminBootstrap();
       }
 
+      case "save_subject_catalog": {
+        const { grade, subjects } = normalizeDemoSubjectCatalog(
+          payload.grade,
+          payload.subjects,
+        );
+        state.subjectCatalog = {
+          ...state.subjectCatalog,
+          [String(grade)]: subjects,
+        };
+        return this.adminBootstrap();
+      }
+
+      case "save_exam_notice_settings":
+        state.examNotice = normalizeDemoExamNotice(payload.notice);
+        return this.adminBootstrap();
+
       case "delete_timetable": {
         const target = state.timetable.find((item) => String(item.id) === String(payload.id));
         if (!target) {
@@ -731,6 +882,8 @@ class DemoRepository {
       ...this.teacherBootstrap(),
       students: sortStudents(this.state.students.filter((item) => item.active !== false)),
       timetable: structuredClone(this.state.timetable),
+      subject_catalog: structuredClone(this.state.subjectCatalog),
+      exam_notice: structuredClone(this.state.examNotice),
       enrollments: structuredClone(this.state.enrollments),
       seat_charts: structuredClone(this.state.seatCharts),
     };

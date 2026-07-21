@@ -5,7 +5,10 @@ import {
   analyzeEnrollmentRows,
   analyzeManualSeatRows,
   analyzeStudentRows,
+  analyzeSubjectCatalogRows,
   absenceKey,
+  buildExamNoticeSchedule,
+  buildExamNoticeTitle,
   buildPersonalTimetable,
   buildSeatSlots,
   filterAbsences,
@@ -20,6 +23,120 @@ import {
   seatChartKey,
   summarizeAbsences,
 } from "../src/core.js";
+
+test("교과목 엑셀은 과목명 헤더를 인식하고 이름을 정리해 정렬한다", () => {
+  const longName = `심화${"가".repeat(90)}`;
+  const result = analyzeSubjectCatalogRows([
+    ["과목명"],
+    ["  사회   문화  "],
+    ["경제"],
+    [longName],
+  ]);
+
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.rows.map((item) => item.subject_name), [
+    "경제",
+    "사회 문화",
+    longName.replace(/\s+/g, " ").trim().slice(0, 80),
+  ]);
+  assert.deepEqual(result.rows.map((item) => item.row_number), [3, 2, 4]);
+});
+
+test("교과목 엑셀은 잘못된 헤더와 빈 행, 중복 과목의 행 번호를 알려준다", () => {
+  assert.deepEqual(analyzeSubjectCatalogRows([["교과"]]), {
+    rows: [],
+    errors: [{ row_number: 1, code: "INVALID_HEADERS" }],
+  });
+
+  const result = analyzeSubjectCatalogRows([
+    ["과목"],
+    ["국어"],
+    ["   "],
+    ["국어"],
+  ]);
+  assert.deepEqual(result.rows, [{ subject_name: "국어", row_number: 2 }]);
+  assert.deepEqual(result.errors, [
+    { row_number: 3, code: "INVALID_SUBJECT_ROW" },
+    { row_number: 4, code: "DUPLICATE_SUBJECT_NAME" },
+  ]);
+});
+
+test("가정통신문 제목은 학년도, 학기, 고사명이 모두 있을 때만 만든다", () => {
+  assert.equal(
+    buildExamNoticeTitle({ year: 2026, semester: 1, exam_name: "중간고사" }),
+    "2026학년도 1학기 중간고사 시간표",
+  );
+  assert.equal(buildExamNoticeTitle({ year: 2026, semester: 1, exam_name: " " }), "");
+});
+
+test("가정통신문 시간표는 활성 고사일과 학년만 묶어 날짜, 교시, 시간순으로 정렬한다", () => {
+  const result = buildExamNoticeSchedule({
+    examDates: [
+      { exam_date: "2026-07-21", active: true },
+      { exam_date: "2026-07-19", active: false },
+      { exam_date: "2026-07-20", active: true },
+    ],
+    classes: [
+      { id: "c23", grade: 2, class_num: 3, active: true },
+      { id: "c12", grade: 1, class_num: 2, active: true },
+      { id: "c31", grade: 3, class_num: 1, active: false },
+      { id: "c11", grade: 1, class_num: 1, active: true },
+      { id: "c21", grade: 2, class_num: 1, active: true },
+      { id: "c22", grade: 2, class_num: 2, active: true },
+    ],
+    timetable: [
+      { exam_date: "2026-07-21", grade: 1, period: 2, start_time: "10:10", end_time: "11:00", subject_name: "수학", subject_type: "common", class_ids: "c11|c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 2, start_time: "10:00", end_time: "10:50", subject_name: "영어", subject_type: "common", class_ids: ["c11", "c12"] },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:30", end_time: "10:20", subject_name: "물리", subject_type: "common", class_ids: "c11|c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "한국사", subject_type: "common", class_ids: "c11|c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "사회문화", subject_type: "elective", class_ids: "c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "경제", subject_type: "elective", class_ids: "c11" },
+      { exam_date: "2026-07-20", grade: 2, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "세계사", subject_type: "elective", class_ids: "c21|c22" },
+      { exam_date: "2026-07-19", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "제외 과목", subject_type: "common", class_ids: "c11|c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 3, start_time: "11:10", end_time: "12:00", subject_name: "비활성 과목", subject_type: "common", class_ids: "c11|c12", active: false },
+    ],
+  });
+
+  assert.deepEqual(result.grades, [1, 2]);
+  assert.deepEqual(
+    result.rows.map((row) => [row.exam_date, row.period, row.time]),
+    [
+      ["2026-07-20", 1, "09:00~09:50"],
+      ["2026-07-20", 1, "09:30~10:20"],
+      ["2026-07-20", 2, "10:00~10:50"],
+      ["2026-07-21", 2, "10:10~11:00"],
+    ],
+  );
+});
+
+test("가정통신문 시간표는 공통·선택 과목 순서와 전체·일부 학급 범위를 표시한다", () => {
+  const result = buildExamNoticeSchedule({
+    examDates: [{ exam_date: "2026-07-20", active: true }],
+    classes: [
+      { id: "c11", grade: 1, class_num: 1, active: true },
+      { id: "c12", grade: 1, class_num: 2, active: true },
+      { id: "c21", grade: 2, class_num: 1, active: true },
+      { id: "c22", grade: 2, class_num: 2, active: true },
+      { id: "c23", grade: 2, class_num: 3, active: true },
+    ],
+    timetable: [
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "사회문화", subject_type: "elective", class_ids: "c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "한국사", subject_type: "common", class_ids: "c11|c12" },
+      { exam_date: "2026-07-20", grade: 1, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "경제", subject_type: "elective", class_ids: "c11" },
+      { exam_date: "2026-07-20", grade: 2, period: 1, start_time: "09:00", end_time: "09:50", subject_name: "세계사", subject_type: "elective", class_ids: "c21,c22" },
+    ],
+  });
+
+  const row = result.rows[0];
+  assert.deepEqual(row.subjects_by_grade[1], [
+    { subject_name: "한국사", subject_type: "common", scope_label: "" },
+    { subject_name: "경제", subject_type: "elective", scope_label: "1반" },
+    { subject_name: "사회문화", subject_type: "elective", scope_label: "2반" },
+  ]);
+  assert.deepEqual(row.subjects_by_grade[2], [
+    { subject_name: "세계사", subject_type: "elective", scope_label: "1·2반" },
+  ]);
+});
 
 test("고사일을 한국어 요일과 함께 지역 시간대에 영향 없이 표시한다", () => {
   assert.equal(formatKoreanDate("2026-07-20"), "2026년 7월 20일 (월요일)");

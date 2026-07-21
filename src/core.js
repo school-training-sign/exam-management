@@ -158,7 +158,16 @@ export function normalizeManualSeatRows(rows = []) {
   return result.sort((left, right) => left.class_num - right.class_num || left.number - right.number);
 }
 
-function analyzeFixedRows(rows, columns, rowCode, duplicateCode, build, keyFor, sort) {
+function analyzeFixedRows(
+  rows,
+  columns,
+  rowCode,
+  duplicateCode,
+  build,
+  keyFor,
+  sort,
+  { skipBlankRows = true } = {},
+) {
   if (!Array.isArray(rows) || !rows.length) return { rows: [], errors: [] };
   const matrix = rows.map((row) => (Array.isArray(row) ? row : Object.values(row)));
   const header = matrix[0].map((value) => compactText(value, 40).replace(/\s/g, ""));
@@ -173,7 +182,7 @@ function analyzeFixedRows(rows, columns, rowCode, duplicateCode, build, keyFor, 
   const valid = [];
   const errors = [];
   matrix.slice(1).forEach((row, index) => {
-    if (row.every((value) => compactText(value, 10) === "")) return;
+    if (skipBlankRows && row.every((value) => compactText(value, 10) === "")) return;
     const rowNumber = index + 2;
     const item = build(row, indexes, rowNumber);
     if (!item) {
@@ -288,6 +297,23 @@ export function analyzeManualSeatRows(rows = []) {
     },
     (item) => `${item.class_num}|${item.number}`,
     (left, right) => left.class_num - right.class_num || left.number - right.number,
+  );
+}
+
+export function analyzeSubjectCatalogRows(rows = []) {
+  return analyzeFixedRows(
+    rows,
+    [{ key: "subject", aliases: ["과목명", "과목"] }],
+    "INVALID_SUBJECT_ROW",
+    "DUPLICATE_SUBJECT_NAME",
+    (row, indexes, rowNumber) => {
+      const subject_name = compactText(row[indexes.subject], 80);
+      if (!subject_name) return null;
+      return { subject_name, row_number: rowNumber };
+    },
+    (item) => item.subject_name,
+    (left, right) => left.subject_name.localeCompare(right.subject_name, "ko"),
+    { skipBlankRows: false },
   );
 }
 
@@ -517,6 +543,131 @@ export function buildPersonalTimetable({
         (chosen?.subject_type === "common" ? classLabel(classInfo) : ""),
     };
   });
+}
+
+export function buildExamNoticeTitle(notice = {}) {
+  const year = compactText(notice?.year, 10);
+  const semester = compactText(notice?.semester, 10);
+  const examName = compactText(notice?.exam_name, 80);
+  if (!year || !semester || !examName) return "";
+  return `${year}학년도 ${semester}학기 ${examName} 시간표`;
+}
+
+function parseNoticeClassIds(value) {
+  const values = Array.isArray(value)
+    ? value
+    : String(value || "").split(/[|,]/);
+  return [...new Set(values.map((item) => compactText(item, 80)).filter(Boolean))];
+}
+
+export function buildExamNoticeSchedule({
+  examDates = [],
+  timetable = [],
+  classes = [],
+} = {}) {
+  const activeClasses = sortClasses(
+    classes.filter(
+      (item) =>
+        item?.active !== false &&
+        Number.isInteger(Number(item?.grade)) &&
+        Number(item.grade) > 0 &&
+        Number.isInteger(Number(item?.class_num)) &&
+        Number(item.class_num) > 0,
+    ),
+  );
+  const classesByGrade = new Map();
+  activeClasses.forEach((item) => {
+    const grade = Number(item.grade);
+    if (!classesByGrade.has(grade)) classesByGrade.set(grade, []);
+    classesByGrade.get(grade).push(item);
+  });
+  const grades = [...classesByGrade.keys()].sort((left, right) => left - right);
+
+  const activeExamDates = new Set(
+    examDates
+      .filter((item) => item?.active !== false)
+      .map((item) => compactText(item?.exam_date, 20))
+      .filter(Boolean),
+  );
+  const grouped = new Map();
+
+  timetable.forEach((item) => {
+    if (item?.active === false) return;
+    const examDate = compactText(item?.exam_date, 20);
+    const grade = Number(item?.grade);
+    const period = Number(item?.period);
+    const subjectName = compactText(item?.subject_name, 80);
+    const gradeClasses = classesByGrade.get(grade) || [];
+    if (
+      !activeExamDates.has(examDate) ||
+      !Number.isInteger(period) ||
+      period < 1 ||
+      !subjectName ||
+      !gradeClasses.length
+    ) return;
+
+    const classIds = parseNoticeClassIds(item?.class_ids);
+    const hasExplicitScope = classIds.length > 0;
+    const selectedIds = new Set(classIds);
+    const selectedClasses = hasExplicitScope
+      ? gradeClasses.filter((classItem) => selectedIds.has(String(classItem.id)))
+      : gradeClasses;
+    if (hasExplicitScope && !selectedClasses.length) return;
+
+    const coversWholeGrade =
+      !hasExplicitScope || selectedClasses.length === gradeClasses.length;
+    const scopeLabel = coversWholeGrade
+      ? ""
+      : `${[
+          ...new Set(selectedClasses.map((classItem) => Number(classItem.class_num))),
+        ]
+          .sort((left, right) => left - right)
+          .join("·")}반`;
+    const startTime = compactText(item?.start_time, 20);
+    const endTime = compactText(item?.end_time, 20);
+    const time = [startTime, endTime].filter(Boolean).join("~");
+    const key = `${examDate}|${period}|${startTime}|${endTime}`;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        exam_date: examDate,
+        period,
+        time,
+        subjects_by_grade: Object.fromEntries(grades.map((value) => [value, []])),
+      });
+    }
+    grouped.get(key).subjects_by_grade[grade].push({
+      subject_name: subjectName,
+      subject_type: compactText(item?.subject_type, 20),
+      scope_label: scopeLabel,
+    });
+  });
+
+  const typeRank = (value) => {
+    if (value === "common") return 0;
+    if (value === "elective") return 1;
+    return 2;
+  };
+  const rows = [...grouped.values()]
+    .map((row) => {
+      grades.forEach((grade) => {
+        row.subjects_by_grade[grade].sort(
+          (left, right) =>
+            typeRank(left.subject_type) - typeRank(right.subject_type) ||
+            left.subject_name.localeCompare(right.subject_name, "ko") ||
+            left.scope_label.localeCompare(right.scope_label, "ko"),
+        );
+      });
+      return row;
+    })
+    .sort(
+      (left, right) =>
+        left.exam_date.localeCompare(right.exam_date) ||
+        left.period - right.period ||
+        left.time.localeCompare(right.time),
+    );
+
+  return { grades, rows };
 }
 
 export function filterAbsences(absences = [], filters = {}) {

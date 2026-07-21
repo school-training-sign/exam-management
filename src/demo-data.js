@@ -87,6 +87,22 @@ const timetable = [
   },
 ];
 
+const subjectCatalog = {
+  1: ["국어", "경제", "세계사와 지리", "수학"],
+  2: ["영어"],
+  3: [],
+};
+
+const examNotice = {
+  year: 2026,
+  semester: 1,
+  exam_name: "기말고사",
+  greeting: "",
+  notes: [],
+  issue_date: "2026-07-10",
+  issuer: "한양대학교사범대학부속고등학교장",
+};
+
 const enrollments = [
   { id: "e1", grade: 1, class_id: "c11", student_id: "s111", subject_name: "경제", room_name: "별실 1" },
   { id: "e2", grade: 1, class_id: "c11", student_id: "s112", subject_name: "세계사와 지리", room_name: "별실 2" },
@@ -117,7 +133,7 @@ completion.key = completionKey(completion);
 export function createDemoState() {
   return structuredClone({
     settings: {
-      school_name: "한양 데모학교",
+      school_name: "한양대학교사범대학부속고등학교",
       app_name: "정기고사 관리 시스템",
       timezone: "Asia/Seoul",
     },
@@ -125,6 +141,8 @@ export function createDemoState() {
     students,
     examDates,
     timetable,
+    subjectCatalog,
+    examNotice,
     enrollments,
     absences: [absence],
     completions: [completion],

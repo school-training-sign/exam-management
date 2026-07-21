@@ -10,6 +10,7 @@ import IconClipboardCheck from "@tabler/icons-react/dist/esm/icons/IconClipboard
 import IconClock from "@tabler/icons-react/dist/esm/icons/IconClock.mjs";
 import IconDeviceFloppy from "@tabler/icons-react/dist/esm/icons/IconDeviceFloppy.mjs";
 import IconDownload from "@tabler/icons-react/dist/esm/icons/IconDownload.mjs";
+import IconFileText from "@tabler/icons-react/dist/esm/icons/IconFileText.mjs";
 import IconFileSpreadsheet from "@tabler/icons-react/dist/esm/icons/IconFileSpreadsheet.mjs";
 import IconLayoutGrid from "@tabler/icons-react/dist/esm/icons/IconLayoutGrid.mjs";
 import IconListCheck from "@tabler/icons-react/dist/esm/icons/IconListCheck.mjs";
@@ -30,7 +31,10 @@ import {
   aggregateAbsenceReport,
   analyzeEnrollmentRows,
   analyzeManualSeatRows,
+  analyzeSubjectCatalogRows,
   analyzeStudentRows,
+  buildExamNoticeSchedule,
+  buildExamNoticeTitle,
   buildPersonalTimetable,
   buildSeatSlots,
   classLabel,
@@ -64,6 +68,8 @@ const EMPTY_BOOTSTRAP = {
   timetable: [],
   enrollments: [],
   seat_charts: [],
+  subject_catalog: {},
+  exam_notice: {},
 };
 
 function messageFrom(error) {
@@ -84,6 +90,8 @@ function importErrorMessage(prefix, errors = []) {
     STUDENT_NAME_MISMATCH: "학생 이름 불일치",
     SUBJECT_NOT_FOUND: "선택과목 없음",
     SUBJECT_CLASS_MISMATCH: "과목 적용 학급 아님",
+    INVALID_SUBJECT_ROW: "교과목명 오류",
+    DUPLICATE_SUBJECT_NAME: "교과목명 중복",
   };
   const details = errors
     .slice(0, 10)
@@ -112,6 +120,61 @@ async function readWorkbookRows(file) {
 
 function selectFirst(items, key = "id") {
   return items?.[0]?.[key] || "";
+}
+
+const OFFICIAL_SCHOOL_NAME = "한양대학교사범대학부속고등학교";
+
+function localIsoDate() {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function defaultNoticeGreeting(notice = {}) {
+  const title = buildExamNoticeTitle(notice).replace(/ 시간표$/, "");
+  return `학부모님, 안녕하십니까?\n${title || "정기고사"} 일정을 아래와 같이 안내드립니다. 학생들이 준비한 역량을 충분히 발휘할 수 있도록 가정에서도 관심과 격려 부탁드립니다.`;
+}
+
+function noticeDraftFrom(bootstrap = EMPTY_BOOTSTRAP) {
+  const source = bootstrap.exam_notice || {};
+  const schoolName = bootstrap.settings?.school_name || OFFICIAL_SCHOOL_NAME;
+  return {
+    year: source.year || Number(String(bootstrap.exam_dates?.[0]?.exam_date || "").slice(0, 4)) || new Date().getFullYear(),
+    semester: source.semester || 1,
+    exam_name: source.exam_name || "",
+    greeting: source.greeting || "",
+    notes: Array.isArray(source.notes) ? source.notes.join("\n") : String(source.notes || ""),
+    issue_date: source.issue_date || localIsoDate(),
+    issuer: source.issuer || `${schoolName}장`,
+  };
+}
+
+function classIdsFrom(value) {
+  if (Array.isArray(value)) return value.map(String);
+  return String(value || "").split(/[|,]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function timetableClassScope(item, classes = []) {
+  const gradeClasses = classes.filter(
+    (row) => row.active !== false && Number(row.grade) === Number(item.grade),
+  );
+  const selected = new Set(classIdsFrom(item.class_ids));
+  if (gradeClasses.length && gradeClasses.every((row) => selected.has(String(row.id)))) return "전체";
+  return gradeClasses
+    .filter((row) => selected.has(String(row.id)))
+    .map((row) => `${Number(row.class_num)}반`)
+    .join(", ") || "미지정";
+}
+
+function IndeterminateCheckbox({ indeterminate = false, ...props }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return <input ref={ref} type="checkbox" {...props} />;
 }
 
 function EmptyState({ icon: Icon = IconClipboardCheck, title, description }) {
@@ -169,7 +232,6 @@ function LoginScreen({ onLogin }) {
       <div className="login-ornament ornament-two" />
       <section className="login-card">
         <div className="brand-seal"><IconBook size={34} stroke={1.5} /></div>
-        <p className="eyebrow">SCHOOL EXAM OPERATIONS</p>
         <h1>정기고사<br />관리 시스템</h1>
         <p className="login-copy">결시 입력부터 고사본부 현황, 자리배치와 출력까지 한 곳에서 관리합니다.</p>
         <form onSubmit={submit}>
@@ -272,7 +334,6 @@ function AdminDialog({ open, onClose, onUnlock }) {
           <IconX size={20} />
         </button>
         <span className="dialog-icon"><IconLock size={26} /></span>
-        <p className="eyebrow">ADMIN ACCESS</p>
         <h2 id="admin-title">관리자 확인</h2>
         <p>고사본부·자리배치·설정은 관리자 암호가 필요합니다.</p>
         <form onSubmit={submit}>
@@ -296,11 +357,10 @@ function AdminDialog({ open, onClose, onUnlock }) {
   );
 }
 
-function SectionHeader({ eyebrow, title, description, actions }) {
+function SectionHeader({ title, description, actions }) {
   return (
     <header className="section-header">
       <div>
-        <p className="eyebrow">{eyebrow}</p>
         <h2>{title}</h2>
         {description ? <p>{description}</p> : null}
       </div>
@@ -468,7 +528,6 @@ function AbsencePanel({ bootstrap }) {
   return (
     <section className="page-section print-section">
       <SectionHeader
-        eyebrow="TEACHER DESK"
         title="결시 학생 입력"
         description="고사일·학급·교시를 선택해 명단을 불러온 뒤, 결시자와 사유를 한 번에 제출하세요."
         actions={<button className="button button-light" onClick={() => window.print()} disabled={!loaded}><IconPrinter size={17} /> 응시현황표 인쇄</button>}
@@ -755,7 +814,6 @@ function HqPanel({ bootstrap }) {
   return (
     <section className="page-section print-section">
       <SectionHeader
-        eyebrow="EXAM HEADQUARTERS"
         title="고사본부 현황"
         description="교시별 결시 현황과 학급 제출 여부를 확인합니다. 이 화면에서만 30초마다 자동 갱신됩니다."
         actions={
@@ -1299,7 +1357,6 @@ function SeatPanel({ bootstrap, onBootstrap }) {
   return (
     <section className="page-section">
       <SectionHeader
-        eyebrow="SEATING PLAN"
         title="자리배치"
         description="별실은 학년 전체, 각자 교실은 학급 전체를 기준으로 6행×5열 좌석을 만듭니다."
         actions={<button className="button button-light" onClick={() => window.print()} disabled={!result.assignments.length}><IconPrinter size={17} /> PDF·인쇄</button>}
@@ -1427,10 +1484,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   const [printGrade, setPrintGrade] = useState(Number(bootstrap.classes[0]?.grade || 1));
   const [printClassId, setPrintClassId] = useState(selectFirst(bootstrap.classes));
   const [cleanupDate, setCleanupDate] = useState("");
+  const [examNoticeDraft, setExamNoticeDraft] = useState(() => noticeDraftFrom(bootstrap));
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const studentFileRef = useRef(null);
   const enrollmentFileRef = useRef(null);
+  const subjectFileRef = useRef(null);
 
   useEffect(() => {
     if (!selectedClassId && bootstrap.classes.length) setSelectedClassId(bootstrap.classes[0].id);
@@ -1453,12 +1512,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   useEffect(() => {
     const available = bootstrap.classes
-      .filter((item) => Number(item.grade) === Number(timetableDraft.grade))
-      .map((item) => item.id);
+      .filter((item) => item.active !== false && Number(item.grade) === Number(timetableDraft.grade))
+      .map((item) => String(item.id));
     setTimetableDraft((value) => ({
       ...value,
-      class_ids: value.class_ids.filter((id) => available.includes(id)).length
-        ? value.class_ids.filter((id) => available.includes(id))
+      class_ids: classIdsFrom(value.class_ids).filter((id) => available.includes(id)).length
+        ? classIdsFrom(value.class_ids).filter((id) => available.includes(id))
         : available,
     }));
   }, [bootstrap.classes, timetableDraft.grade]);
@@ -1669,6 +1728,59 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     }
   }
 
+  async function importSubjectFile(file) {
+    if (!file) return;
+    try {
+      const analyzed = analyzeSubjectCatalogRows(await readWorkbookRows(file));
+      if (analyzed.errors.length) {
+        throw new Error(importErrorMessage("교과목 목록을 가져오지 않았습니다", analyzed.errors));
+      }
+      const subjects = analyzed.rows.map((item) => item.subject_name);
+      if (!subjects.length) throw new Error("가져올 교과목이 없습니다. '과목명' 열과 값을 확인하세요.");
+      setMessage("");
+      setError("");
+      const result = await apiRequest("save_subject_catalog", {
+        grade: Number(timetableDraft.grade),
+        subjects,
+      });
+      onBootstrap({ ...bootstrap, ...result });
+      setMessage(`${timetableDraft.grade}학년 교과목 ${subjects.length}개를 저장했습니다.`);
+    } catch (nextError) {
+      const backendErrors = nextError?.details?.errors || [];
+      setError(backendErrors.length
+        ? importErrorMessage("교과목 목록을 저장하지 않았습니다", backendErrors)
+        : messageFrom(nextError));
+    } finally {
+      if (subjectFileRef.current) subjectFileRef.current.value = "";
+    }
+  }
+
+  function normalizedExamNotice() {
+    return {
+      year: Number(examNoticeDraft.year),
+      semester: Number(examNoticeDraft.semester),
+      exam_name: String(examNoticeDraft.exam_name || "").trim(),
+      greeting: String(examNoticeDraft.greeting || "").trim(),
+      notes: String(examNoticeDraft.notes || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+      issue_date: String(examNoticeDraft.issue_date || "").trim(),
+      issuer: String(examNoticeDraft.issuer || "").trim(),
+    };
+  }
+
+  async function saveExamNotice(success = "가정통신문 설정을 저장했습니다.") {
+    const notice = normalizedExamNotice();
+    if (!Number.isInteger(notice.year) || notice.year < 1900 || notice.year > 2200) return setError("학년도를 확인하세요.");
+    if (![1, 2].includes(notice.semester)) return setError("학기를 선택하세요.");
+    if (!notice.exam_name) return setError("고사명을 입력하세요.");
+    if (!notice.issue_date) return setError("발행일을 선택하세요.");
+    if (!notice.issuer) return setError("발행 명의를 입력하세요.");
+    const result = await commit("save_exam_notice_settings", { notice }, success);
+    if (result) setExamNoticeDraft({ ...notice, notes: notice.notes.join("\n") });
+  }
+
   async function removeTimetable(id) {
     const item = bootstrap.timetable.find((row) => String(row.id) === String(id));
     if (!item) return;
@@ -1758,6 +1870,45 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     return map;
   }, new Map()).values()];
 
+  const timetableGradeClasses = bootstrap.classes.filter(
+    (item) => item.active !== false && Number(item.grade) === Number(timetableDraft.grade),
+  );
+  const timetableGradeClassIds = timetableGradeClasses.map((item) => String(item.id));
+  const selectedTimetableClassIds = new Set(classIdsFrom(timetableDraft.class_ids));
+  const allTimetableClassesSelected = Boolean(timetableGradeClassIds.length) && timetableGradeClassIds.every(
+    (id) => selectedTimetableClassIds.has(id),
+  );
+  const someTimetableClassesSelected = timetableGradeClassIds.some(
+    (id) => selectedTimetableClassIds.has(id),
+  );
+  const currentSubjectCatalog = bootstrap.subject_catalog?.[String(Number(timetableDraft.grade))] || [];
+  const normalizedNotice = normalizedExamNotice();
+  const printableNotice = {
+    ...normalizedNotice,
+    greeting: normalizedNotice.greeting || defaultNoticeGreeting(normalizedNotice),
+  };
+  const noticeTitle = buildExamNoticeTitle(printableNotice);
+  const noticeSchedule = buildExamNoticeSchedule({
+    examDates: bootstrap.exam_dates,
+    timetable: bootstrap.timetable,
+    classes: bootstrap.classes,
+  });
+  const noticeGrades = [1, 2, 3];
+  const noticeMissing = [
+    !Number.isInteger(printableNotice.year) || printableNotice.year < 1900 || printableNotice.year > 2200 ? "학년도" : "",
+    ![1, 2].includes(printableNotice.semester) ? "학기" : "",
+    !printableNotice.exam_name ? "고사명" : "",
+    !bootstrap.exam_dates.some((item) => item.active !== false) ? "고사일" : "",
+    !noticeSchedule.rows.length ? "시간표" : "",
+    !printableNotice.issue_date ? "발행일" : "",
+    !printableNotice.issuer ? "발행 명의" : "",
+  ].filter(Boolean);
+  const noticeDensity = noticeSchedule.rows.length > 16
+    ? "dense"
+    : noticeSchedule.rows.length > 10
+      ? "compact"
+      : "normal";
+
   async function cleanup() {
     if (!cleanupDate) return setError("정리 기준일을 선택하세요.");
     if (!window.confirm(`${cleanupDate} 이전의 고사·결시·제출·자리배치 기록을 정리할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
@@ -1769,13 +1920,14 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     ["classes", IconUsers, "학급·학생"],
     ["timetable", IconClock, "시간표"],
     ["electives", IconBook, "선택과목"],
+    ["notice", IconFileText, "가정통신문"],
     ["print", IconPrinter, "개인 시간표"],
     ["cleanup", IconTrash, "기록 정리"],
   ];
 
   return (
     <section className="page-section">
-      <SectionHeader eyebrow="ADMIN SETTINGS" title="관리자 설정" description="고사 운영에 필요한 기준 정보를 순서대로 등록하세요." />
+      <SectionHeader title="관리자 설정" description="고사 운영에 필요한 기준 정보를 순서대로 등록하세요." />
       <Notice>{message}</Notice><Notice tone="error">{error}</Notice>
       <div className="settings-layout">
         <nav className="settings-nav no-print" aria-label="설정 메뉴">
@@ -1785,6 +1937,18 @@ function SetupPanel({ bootstrap, onBootstrap }) {
           {active === "dates" ? (
             <article className="panel-card">
               <div className="card-heading"><div><IconCalendar size={20} /><h3>고사일 관리</h3></div></div>
+              <div className="exam-meta-card">
+                <div>
+                  <strong>가정통신문 제목 정보</strong>
+                  <span>{buildExamNoticeTitle(examNoticeDraft) || "학년도·학기·고사명을 입력하세요."}</span>
+                </div>
+                <div className="inline-form">
+                  <label>학년도<input type="number" min="1900" max="2200" value={examNoticeDraft.year} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, year: event.target.value })} /></label>
+                  <label>학기<select value={examNoticeDraft.semester} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, semester: event.target.value })}><option value="1">1학기</option><option value="2">2학기</option></select></label>
+                  <label className="grow-label">고사명<input value={examNoticeDraft.exam_name} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, exam_name: event.target.value })} placeholder="예: 중간고사" /></label>
+                  <button className="button button-light" onClick={() => saveExamNotice("고사 정보를 저장했습니다.")}><IconDeviceFloppy size={17} /> 저장</button>
+                </div>
+              </div>
               <div className="inline-form">
                 <label>날짜<span className="date-input-row"><input type="date" value={newDate} onChange={(event) => setNewDate(event.target.value)} aria-describedby="new-exam-date-weekday" /><output id="new-exam-date-weekday" className="weekday-output" aria-live="polite">{formatKoreanWeekday(newDate)}</output></span></label>
                 <label>표시 이름<input value={newDateLabel} onChange={(event) => setNewDateLabel(event.target.value)} placeholder="예: 1일차" /></label>
@@ -1840,7 +2004,18 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
           {active === "timetable" ? (
             <article className="panel-card">
-              <div className="card-heading"><div><IconClock size={20} /><h3>공통·선택과목 시간표</h3></div></div>
+              <div className="card-heading subject-heading">
+                <div><IconClock size={20} /><h3>공통·선택과목 시간표</h3></div>
+                <div className="card-heading-actions">
+                  <button className="button button-light" onClick={() => downloadWorkbook(`${timetableDraft.grade}학년 교과목 등록 양식`, { 교과목: [["과목명"], ["국어"], ["수학"]] })}><IconDownload size={17} /> 교과목 엑셀 양식</button>
+                  <button className="button button-light" onClick={() => subjectFileRef.current?.click()}><IconUpload size={17} /> 엑셀 가져오기</button>
+                  <input ref={subjectFileRef} className="sr-only" type="file" accept=".xlsx,.xls" onChange={(event) => importSubjectFile(event.target.files?.[0])} />
+                </div>
+              </div>
+              <div className="subject-catalog-summary">
+                <div><strong>{timetableDraft.grade}학년 등록 교과목</strong><span>{currentSubjectCatalog.length}개 · 가져오면 이 학년 목록만 교체됩니다.</span></div>
+                {currentSubjectCatalog.length ? <div className="subject-chips">{currentSubjectCatalog.map((subject) => <span key={subject}>{subject}</span>)}</div> : <p>아직 등록된 교과목이 없습니다. 직접 입력해도 시간표를 저장할 수 있습니다.</p>}
+              </div>
               <div className="form-grid">
                 <label>고사일<select value={timetableDraft.exam_date} onChange={(event) => setTimetableDraft({ ...timetableDraft, exam_date: event.target.value })}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}</select></label>
                 <label>학년<input type="number" min="1" value={timetableDraft.grade} onChange={(event) => setTimetableDraft({ ...timetableDraft, grade: event.target.value })} /></label>
@@ -1848,21 +2023,33 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 <label>시작<input type="time" value={timetableDraft.start_time} onChange={(event) => setTimetableDraft({ ...timetableDraft, start_time: event.target.value })} /></label>
                 <label>종료<input type="time" value={timetableDraft.end_time} onChange={(event) => setTimetableDraft({ ...timetableDraft, end_time: event.target.value })} /></label>
                 <label>구분<select value={timetableDraft.subject_type} onChange={(event) => setTimetableDraft({ ...timetableDraft, subject_type: event.target.value })}><option value="common">공통과목</option><option value="elective">선택과목</option></select></label>
-                <label className="span-two">과목명<input value={timetableDraft.subject_name} onChange={(event) => setTimetableDraft({ ...timetableDraft, subject_name: event.target.value })} /></label>
+                <label className="span-two">과목명<input list={`subject-options-${timetableDraft.grade}`} value={timetableDraft.subject_name} onChange={(event) => setTimetableDraft({ ...timetableDraft, subject_name: event.target.value })} placeholder="검색하거나 직접 입력" /><datalist id={`subject-options-${timetableDraft.grade}`}>{currentSubjectCatalog.map((subject) => <option value={subject} key={subject} />)}</datalist></label>
                 <label>기본 호실<input value={timetableDraft.room_name} onChange={(event) => setTimetableDraft({ ...timetableDraft, room_name: event.target.value })} /></label>
               </div>
               <fieldset className="class-scope">
                 <legend>적용 학급</legend>
-                {bootstrap.classes.filter((item) => Number(item.grade) === Number(timetableDraft.grade)).map((item) => (
+                <label className="class-scope-all">
+                  <IndeterminateCheckbox
+                    checked={allTimetableClassesSelected}
+                    indeterminate={someTimetableClassesSelected && !allTimetableClassesSelected}
+                    aria-label={`${timetableDraft.grade}학년 전체 학급`}
+                    onChange={(event) => setTimetableDraft((value) => ({
+                      ...value,
+                      class_ids: event.target.checked ? [...timetableGradeClassIds] : [],
+                    }))}
+                  />
+                  전체
+                </label>
+                {timetableGradeClasses.map((item) => (
                   <label key={item.id}>
                     <input
                       type="checkbox"
-                      checked={timetableDraft.class_ids.includes(item.id)}
+                      checked={selectedTimetableClassIds.has(String(item.id))}
                       onChange={() => setTimetableDraft((value) => ({
                         ...value,
-                        class_ids: value.class_ids.includes(item.id)
-                          ? value.class_ids.filter((id) => id !== item.id)
-                          : [...value.class_ids, item.id],
+                        class_ids: classIdsFrom(value.class_ids).includes(String(item.id))
+                          ? classIdsFrom(value.class_ids).filter((id) => id !== String(item.id))
+                          : [...classIdsFrom(value.class_ids), String(item.id)],
                       }))}
                     />
                     {classLabel(item)}
@@ -1870,7 +2057,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 ))}
               </fieldset>
               <button className="button button-secondary" onClick={addTimetable}><IconPlus size={17} /> 시간표 추가</button>
-              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th>적용 학급</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{formatKoreanDate(item.exam_date)}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td>{String(item.class_ids || "").split(/[|,]/).filter(Boolean).map((id) => classLabel(bootstrap.classes.find((row) => String(row.id) === String(id)))).join(", ") || "학년 전체"}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)} aria-label={`${item.subject_name} 삭제`}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
+              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th>적용 학급</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{formatKoreanDate(item.exam_date)}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td>{timetableClassScope(item, bootstrap.classes)}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)} aria-label={`${item.subject_name} 삭제`}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
             </article>
           ) : null}
 
@@ -1911,6 +2098,63 @@ function SetupPanel({ bootstrap, onBootstrap }) {
             </article>
           ) : null}
 
+          {active === "notice" ? (
+            <article className="panel-card notice-panel print-section">
+              <div className="card-heading no-print">
+                <div><IconFileText size={20} /><h3>가정통신문</h3></div>
+                <div className="card-heading-actions">
+                  <button className="button button-light" onClick={() => saveExamNotice()}><IconDeviceFloppy size={17} /> 설정 저장</button>
+                  <button
+                    className="button button-gold"
+                    disabled={noticeMissing.length > 0}
+                    onClick={() => window.print()}
+                    title={noticeMissing.length ? `${noticeMissing.join(", ")}을(를) 먼저 입력하세요.` : "A4 가로 한 장으로 인쇄"}
+                  ><IconPrinter size={17} /> A4 가로 인쇄</button>
+                </div>
+              </div>
+              <div className="notice-editor no-print">
+                <p className="body-copy">활성 고사일 전체와 저장된 시간표를 모아 전 학년 통합 시간표를 만듭니다.</p>
+                <div className="form-grid notice-form">
+                  <label className="span-two">인사말 <span>비워 두면 고사 정보에 맞춰 기본 문구가 만들어집니다.</span><textarea rows="4" value={examNoticeDraft.greeting} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, greeting: event.target.value })} placeholder={defaultNoticeGreeting(examNoticeDraft)} /></label>
+                  <label className="span-two">안내사항 <span>한 줄에 한 항목씩 입력하세요. 없어도 됩니다.</span><textarea rows="4" value={examNoticeDraft.notes} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, notes: event.target.value })} placeholder={"예: 시험 기간 중 등교 시간을 지켜 주세요.\n예: 준비물은 과목별 안내를 확인해 주세요."} /></label>
+                  <label>발행일<input type="date" value={examNoticeDraft.issue_date} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, issue_date: event.target.value })} /></label>
+                  <label>발행 명의<input value={examNoticeDraft.issuer} onChange={(event) => setExamNoticeDraft({ ...examNoticeDraft, issuer: event.target.value })} /></label>
+                </div>
+                {noticeMissing.length ? <div className="notice-readiness" role="status"><IconAlertTriangle size={18} /><span>인쇄하려면 다음 항목을 먼저 입력하세요: {noticeMissing.join(", ")}</span></div> : <div className="notice-readiness ready" role="status"><IconCheck size={18} /><span>{noticeSchedule.rows.length}행 시간표가 인쇄 준비되었습니다.</span></div>}
+              </div>
+
+              <div className="exam-notice-preview">
+                <section className={`exam-notice-sheet density-${noticeDensity}`} aria-label="가정통신문 인쇄 미리보기">
+                  <header className="exam-notice-header">
+                    <span>{bootstrap.settings.school_name || OFFICIAL_SCHOOL_NAME}</span>
+                    <h3>{noticeTitle || "고사 시간표"}</h3>
+                    <p>학부모님께</p>
+                  </header>
+                  <p className="exam-notice-greeting">{printableNotice.greeting}</p>
+                  <table className="exam-notice-table">
+                    <thead><tr><th>날짜</th><th>교시</th><th>시간</th>{noticeGrades.map((item) => <th key={item}>{item}학년</th>)}</tr></thead>
+                    <tbody>{noticeSchedule.rows.length ? noticeSchedule.rows.map((row) => (
+                      <tr key={`${row.exam_date}-${row.period}-${row.time}`}>
+                        <td>{formatKoreanDate(row.exam_date)}</td>
+                        <td>{row.period}교시</td>
+                        <td>{row.time || "-"}</td>
+                        {noticeGrades.map((item) => {
+                          const subjects = row.subjects_by_grade?.[item] || [];
+                          return <td key={item}>{subjects.length ? subjects.map((subject, index) => <div className="exam-notice-subject" key={`${subject.subject_name}-${index}`}><span>{subject.subject_name}</span>{subject.subject_type === "elective" ? <em>선택</em> : null}{subject.scope_label ? <small>{subject.scope_label}</small> : null}</div>) : <span className="empty-mark">-</span>}</td>;
+                        })}
+                      </tr>
+                    )) : <tr><td colSpan="6" className="notice-empty-row">등록된 시간표가 없습니다.</td></tr>}</tbody>
+                  </table>
+                  {printableNotice.notes.length ? <section className="exam-notice-notes"><strong>안내사항</strong><ol>{printableNotice.notes.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ol></section> : null}
+                  <footer className="exam-notice-footer">
+                    <time dateTime={printableNotice.issue_date}>{printableNotice.issue_date ? formatKoreanDate(printableNotice.issue_date) : "발행일 미입력"}</time>
+                    <strong>{printableNotice.issuer || "발행 명의 미입력"}</strong>
+                  </footer>
+                </section>
+              </div>
+            </article>
+          ) : null}
+
           {active === "print" ? (
             <article className="panel-card print-section">
               <div className="card-heading no-print"><div><IconPrinter size={20} /><h3>학생별 개인 시간표</h3></div><button className="button button-light" onClick={() => window.print()} disabled={!personalSheets.length}><IconPrinter size={17} /> A4 일괄 인쇄</button></div>
@@ -1923,7 +2167,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
               </div>
               {personalSheets.map(({ student, classInfo, rows: scheduleRows }) => (
                 <div className="personal-sheet" key={student.id}>
-                  <p>PERSONAL EXAM SCHEDULE</p><h3>개인 고사 시간표</h3>
+                  <h3>개인 고사 시간표</h3>
                   <div className="student-meta"><span>{classLabel(classInfo)}</span><strong>{student.number}번 {student.name}</strong></div>
                   <table><thead><tr><th>고사일</th><th>교시</th><th>시간</th><th>과목</th><th>고사실</th></tr></thead><tbody>{scheduleRows.map((row) => <tr key={`${row.exam_date}-${row.period}`}><td>{formatKoreanDate(row.exam_date)}</td><td>{row.period}</td><td>{row.time}</td><td>{row.subject_name}</td><td>{row.room_name}</td></tr>)}</tbody></table>
                 </div>
@@ -2117,7 +2361,7 @@ export function App() {
     <div className="app-shell">
       <header className="app-header no-print">
         <div className="header-inner">
-          <div className="header-brand"><span><IconBook size={22} /></span><div><strong>{bootstrap.settings.app_name || "정기고사 관리 시스템"}</strong><small>{bootstrap.settings.school_name || "학교 고사 운영"}</small></div></div>
+          <div className="header-brand"><span><IconBook size={22} /></span><div><strong>{bootstrap.settings.app_name || "정기고사 관리 시스템"}</strong><small>{bootstrap.settings.school_name || OFFICIAL_SCHOOL_NAME}</small></div></div>
           <div className="header-actions">
             <span
               className={`connection-badge ${presence.status}`}
@@ -2127,6 +2371,11 @@ export function App() {
             >
               <span className="connection-dot" aria-hidden="true" />
               {formatPresenceLabel(presence.status, presence.onlineCount)}
+            </span>
+            <span className="idle-badge" title="5분 미사용 시 자동 로그아웃" aria-label="5분 미사용 시 자동 로그아웃">
+              <IconClock size={14} aria-hidden="true" />
+              <span className="idle-label-full">5분 미사용 시 자동 로그아웃</span>
+              <span className="idle-label-short" aria-hidden="true">5분</span>
             </span>
             <span className={`mode-badge ${appMode.demo ? "demo" : ""}`}>{appMode.name}</span>
             {admin ? <span className="admin-badge"><IconShieldLock size={14} /> 관리자</span> : null}
@@ -2152,7 +2401,6 @@ export function App() {
 
       <footer className="app-footer no-print">
         <span>학교 소유 Google Sheets · Apps Script</span>
-        <span>5분 미사용 시 자동 로그아웃</span>
       </footer>
 
       <AdminDialog
