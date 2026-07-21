@@ -14,3 +14,4 @@ When implementing from a selected generated mock, treat that image as the source
 - The production backend is a school-owned Google Sheet with bound Apps Script. The frontend must never contain the school code, administrator password, student names, or backend secrets.
 - Teacher access uses a school-code session. Headquarters, seating, setup, destructive actions, and exports require an administrator session.
 - `?demo=1` must use synthetic data only and must never send writes to the production endpoint.
+- Display exam dates with the full Korean weekday throughout the UI, and show the weekday immediately beside the administrator's date input.

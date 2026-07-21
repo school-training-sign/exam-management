@@ -35,6 +35,7 @@ import {
   buildSeatSlots,
   classLabel,
   formatKoreanDate,
+  formatKoreanWeekday,
   formatPresenceLabel,
   generateSeatAssignment,
   makeId,
@@ -767,7 +768,7 @@ function HqPanel({ bootstrap }) {
       <div className="filter-bar no-print">
         <label>고사일
           <select value={examDate} onChange={(event) => setExamDate(event.target.value)}>
-            {bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {item.exam_date}</option>)}
+            {bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}
           </select>
         </label>
         <label>교시
@@ -844,7 +845,7 @@ function HqPanel({ bootstrap }) {
             <div className="report-summary-grid">
               <div><h4>사유별</h4>{report.reason_summary.map((item) => <span key={item.reason}>{item.reason}<strong>{item.count}건</strong></span>)}</div>
               <div><h4>학급별</h4>{report.class_summary.map((item) => <span key={item.class_id || item.class_label}>{item.class_label}<strong>{item.count}건</strong></span>)}</div>
-              <div><h4>일자별</h4>{report.date_summary.map((item) => <span key={item.exam_date}>{item.exam_date}<strong>{item.count}건</strong></span>)}</div>
+              <div><h4>일자별</h4>{report.date_summary.map((item) => <span key={item.exam_date}>{formatKoreanDate(item.exam_date)}<strong>{item.count}건</strong></span>)}</div>
               <div><h4>학생별</h4>{report.student_summary.map((item) => <span key={item.student_id}>{item.class_label} {item.student_number}번 {item.student_name}<strong>{item.count}건</strong></span>)}</div>
             </div>
           </div>
@@ -1318,7 +1319,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         <aside className="seat-controls no-print">
           <div className="control-group">
             <h3>1. 고사·과목·호실</h3>
-            <label>고사일<select value={examDate} onChange={(event) => changeSeatContext(() => setExamDate(event.target.value))}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {item.exam_date}</option>)}</select></label>
+            <label>고사일<select value={examDate} onChange={(event) => changeSeatContext(() => setExamDate(event.target.value))}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}</select></label>
             <div className="two-fields">
               {mode === "separate" ? (
                 <label>학년<select value={grade} onChange={(event) => changeSeatContext(() => setGrade(Number(event.target.value)))}>{[...new Set(bootstrap.classes.map((item) => Number(item.grade)))].map((item) => <option key={item}>{item}학년</option>)}</select></label>
@@ -1393,7 +1394,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
       <article className="panel-card saved-charts no-print">
         <div className="card-heading"><div><IconDeviceFloppy size={20} /><h3>저장된 자리배치</h3></div><span>{bootstrap.seat_charts.length}개</span></div>
         {bootstrap.seat_charts.length ? <div className="saved-list">{bootstrap.seat_charts.map((chart) => (
-          <div key={chart.id}><div><strong>{chart.subject_name || "과목 미지정"} · {chart.room_name}</strong><span>{chart.exam_date} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`} · {chart.seat_order === "column" ? "세로 순번" : "가로 순번"}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label={`${chart.room_name} 자리배치 삭제`}><IconTrash size={17} /></button></div></div>
+          <div key={chart.id}><div><strong>{chart.subject_name || "과목 미지정"} · {chart.room_name}</strong><span>{formatKoreanDate(chart.exam_date)} · {chart.period}교시 · {chart.class_id ? classLabel(bootstrap.classes.find((item) => item.id === chart.class_id)) : `${chart.grade}학년`} · {chart.seat_order === "column" ? "세로 순번" : "가로 순번"}</span></div><div><button className="button button-light" onClick={() => loadChart(chart)}>불러오기</button><button className="icon-button danger" onClick={() => deleteChart(chart)} aria-label={`${chart.room_name} 자리배치 삭제`}><IconTrash size={17} /></button></div></div>
         ))}</div> : <EmptyState icon={IconDeviceFloppy} title="저장된 배치가 없습니다" description="같은 고사·과목·호실 조합은 중복 없이 최신 배치로 저장됩니다." />}
       </article>
     </section>
@@ -1785,7 +1786,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
             <article className="panel-card">
               <div className="card-heading"><div><IconCalendar size={20} /><h3>고사일 관리</h3></div></div>
               <div className="inline-form">
-                <label>날짜<input type="date" value={newDate} onChange={(event) => setNewDate(event.target.value)} /></label>
+                <label>날짜<span className="date-input-row"><input type="date" value={newDate} onChange={(event) => setNewDate(event.target.value)} aria-describedby="new-exam-date-weekday" /><output id="new-exam-date-weekday" className="weekday-output" aria-live="polite">{formatKoreanWeekday(newDate)}</output></span></label>
                 <label>표시 이름<input value={newDateLabel} onChange={(event) => setNewDateLabel(event.target.value)} placeholder="예: 1일차" /></label>
                 <button className="button button-secondary" onClick={addDate}><IconPlus size={17} /> 추가</button>
               </div>
@@ -1841,7 +1842,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
             <article className="panel-card">
               <div className="card-heading"><div><IconClock size={20} /><h3>공통·선택과목 시간표</h3></div></div>
               <div className="form-grid">
-                <label>고사일<select value={timetableDraft.exam_date} onChange={(event) => setTimetableDraft({ ...timetableDraft, exam_date: event.target.value })}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label}</option>)}</select></label>
+                <label>고사일<select value={timetableDraft.exam_date} onChange={(event) => setTimetableDraft({ ...timetableDraft, exam_date: event.target.value })}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}</select></label>
                 <label>학년<input type="number" min="1" value={timetableDraft.grade} onChange={(event) => setTimetableDraft({ ...timetableDraft, grade: event.target.value })} /></label>
                 <label>교시<select value={timetableDraft.period} onChange={(event) => setTimetableDraft({ ...timetableDraft, period: event.target.value })}>{PERIODS.map((item) => <option key={item}>{item}교시</option>)}</select></label>
                 <label>시작<input type="time" value={timetableDraft.start_time} onChange={(event) => setTimetableDraft({ ...timetableDraft, start_time: event.target.value })} /></label>
@@ -1869,7 +1870,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                 ))}
               </fieldset>
               <button className="button button-secondary" onClick={addTimetable}><IconPlus size={17} /> 시간표 추가</button>
-              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th>적용 학급</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{item.exam_date}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td>{String(item.class_ids || "").split(/[|,]/).filter(Boolean).map((id) => classLabel(bootstrap.classes.find((row) => String(row.id) === String(id)))).join(", ") || "학년 전체"}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)} aria-label={`${item.subject_name} 삭제`}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
+              <div className="table-wrap"><table><thead><tr><th>고사일</th><th>학년</th><th>교시</th><th>시간</th><th>구분</th><th>과목</th><th>적용 학급</th><th></th></tr></thead><tbody>{bootstrap.timetable.map((item) => <tr key={item.id}><td>{formatKoreanDate(item.exam_date)}</td><td>{item.grade}</td><td>{item.period}</td><td>{item.start_time}~{item.end_time}</td><td>{item.subject_type === "common" ? "공통" : "선택"}</td><td>{item.subject_name}</td><td>{String(item.class_ids || "").split(/[|,]/).filter(Boolean).map((id) => classLabel(bootstrap.classes.find((row) => String(row.id) === String(id)))).join(", ") || "학년 전체"}</td><td><button className="icon-button danger" onClick={() => removeTimetable(item.id)} aria-label={`${item.subject_name} 삭제`}><IconTrash size={16} /></button></td></tr>)}</tbody></table></div>
             </article>
           ) : null}
 

@@ -536,8 +536,33 @@ export function toCsvSafeFileName(value) {
   return compactText(value, 80).replace(/[\\/:*?"<>|]/g, "_") || "download";
 }
 
+const KOREAN_WEEKDAYS = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+
+function parseIsoDate(value) {
+  const source = String(value || "");
+  const match = source.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return null;
+
+  return { year, month, day, weekday: KOREAN_WEEKDAYS[date.getUTCDay()] };
+}
+
+export function formatKoreanWeekday(value) {
+  return parseIsoDate(value)?.weekday || "";
+}
+
 export function formatKoreanDate(value) {
-  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return String(value || "");
-  return `${Number(match[1])}년 ${Number(match[2])}월 ${Number(match[3])}일`;
+  const source = String(value || "");
+  const date = parseIsoDate(source);
+  if (!date) return source;
+  return `${date.year}년 ${date.month}월 ${date.day}일 (${date.weekday})`;
 }

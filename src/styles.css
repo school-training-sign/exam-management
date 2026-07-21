@@ -391,6 +391,8 @@ td { padding: 11px; border-bottom: 1px solid #e9edf2; color: #354258; }
 .report-card { margin-top: 15px; }
 .inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
 .inline-form label { min-width: 145px; }
+.date-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.weekday-output { color: var(--navy-700); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .report-summary { margin: 16px 0 0; color: var(--muted); font-size: 13px; }
 .report-results { margin-top: 17px; }
 .report-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

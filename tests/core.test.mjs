@@ -9,6 +9,8 @@ import {
   buildPersonalTimetable,
   buildSeatSlots,
   filterAbsences,
+  formatKoreanDate,
+  formatKoreanWeekday,
   formatPresenceLabel,
   generateSeatAssignment,
   normalizeEnrollmentRows,
@@ -18,6 +20,14 @@ import {
   seatChartKey,
   summarizeAbsences,
 } from "../src/core.js";
+
+test("고사일을 한국어 요일과 함께 지역 시간대에 영향 없이 표시한다", () => {
+  assert.equal(formatKoreanDate("2026-07-20"), "2026년 7월 20일 (월요일)");
+  assert.equal(formatKoreanDate("2026-07-21"), "2026년 7월 21일 (화요일)");
+  assert.equal(formatKoreanWeekday("2026-07-21"), "화요일");
+  assert.equal(formatKoreanDate("잘못된 날짜"), "잘못된 날짜");
+  assert.equal(formatKoreanWeekday("2026-02-30"), "");
+});
 
 test("상단 연결 상태는 현재 화면을 제외한 활성 접속자 수를 표시한다", () => {
   assert.equal(formatPresenceLabel("connected", 0), "연결됨, 0명 접속");
