@@ -7,6 +7,18 @@ export function compactText(value, maxLength = 100) {
     .slice(0, maxLength);
 }
 
+export function normalizeLoginName(value, maxLength = 50) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+export function isSixDigitPin(value) {
+  return /^\d{6}$/.test(String(value ?? ""));
+}
+
 export function makeId(prefix = "id") {
   if (globalThis.crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -716,4 +728,23 @@ export function formatKoreanDate(value) {
   const date = parseIsoDate(source);
   if (!date) return source;
   return `${date.year}년 ${date.month}월 ${date.day}일 (${date.weekday})`;
+}
+
+export const IDLE_LOGOUT_MS = 5 * 60 * 1000;
+
+export function createIdleLogoutTimer(
+  onTimeout,
+  { setTimer = setTimeout, clearTimer = clearTimeout } = {},
+) {
+  let timer = null;
+  return {
+    reset() {
+      if (timer != null) clearTimer(timer);
+      timer = setTimer(onTimeout, IDLE_LOGOUT_MS);
+    },
+    dispose() {
+      if (timer != null) clearTimer(timer);
+      timer = null;
+    },
+  };
 }

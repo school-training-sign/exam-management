@@ -5,6 +5,8 @@ import {
   completionKey,
   filterAbsences,
   makeId,
+  isSixDigitPin,
+  normalizeLoginName,
   seatChartKey,
   sortClasses,
   sortStudents,
@@ -12,8 +14,9 @@ import {
 } from "./core.js";
 import { createDemoState } from "./demo-data.js";
 
-const SCHOOL_SESSION_KEY = "exam-management:school-session";
+const USER_SESSION_KEY = "exam-management:user-session";
 const ADMIN_SESSION_KEY = "exam-management:admin-session";
+const LEGACY_SCHOOL_SESSION_KEY = "exam-management:school-session";
 const CLIENT_ID_KEY = "exam-management:client-id";
 // Apps Script mutations may wait up to 28 seconds for the spreadsheet lock.
 // Keep the browser deadline comfortably above that ceiling so a request cannot
@@ -21,7 +24,40 @@ const CLIENT_ID_KEY = "exam-management:client-id";
 const REQUEST_TIMEOUT_MS = 45_000;
 const PRESENCE_TIMEOUT_MS = 8_000;
 const TRANSIENT_CODES = new Set(["NETWORK_ERROR", "TIMEOUT", "LOCK_TIMEOUT", "BUSY", "TEMPORARY_ERROR"]);
-const SESSION_CODES = new Set(["SESSION_EXPIRED", "INVALID_SESSION", "ADMIN_SESSION_EXPIRED"]);
+const SESSION_CODES = new Set([
+  "SESSION_EXPIRED",
+  "USER_SESSION_EXPIRED",
+  "INVALID_SESSION",
+  "ADMIN_SESSION_EXPIRED",
+]);
+const DEMO_ADMIN_ACTIONS = new Set([
+  "get_admin_bootstrap",
+  "get_hq_status",
+  "get_period_report",
+  "save_exam_dates",
+  "delete_exam_date",
+  "save_class",
+  "delete_class",
+  "replace_students",
+  "import_students",
+  "save_student",
+  "delete_student",
+  "save_timetable",
+  "delete_timetable",
+  "save_subject_catalog",
+  "save_exam_notice_settings",
+  "save_access_user",
+  "set_access_user_active",
+  "reset_access_user_pin",
+  "save_enrollments",
+  "save_seat_chart",
+  "save_seat_charts_batch",
+  "delete_seat_chart",
+  "cleanup",
+]);
+
+sessionStorage.removeItem(LEGACY_SCHOOL_SESSION_KEY);
+if (!sessionStorage.getItem(USER_SESSION_KEY)) sessionStorage.removeItem(ADMIN_SESSION_KEY);
 
 function getClientId() {
   let value = sessionStorage.getItem(CLIENT_ID_KEY);
@@ -227,33 +263,190 @@ function normalizeDemoExamNotice(noticeValue) {
   };
 }
 
-class DemoRepository {
+function accessUserNameKey(value) {
+  return normalizeLoginName(value).toLocaleLowerCase("ko-KR");
+}
+
+function publicAccessUser(user = {}) {
+  return {
+    id: String(user.id || ""),
+    login_name: normalizeLoginName(user.login_name),
+    active: user.active !== false,
+    updated_at: String(user.updated_at || ""),
+  };
+}
+
+export class DemoRepository {
   constructor() {
     this.state = createDemoState();
+    this.accessUsers = [{
+      id: "demo-access-user",
+      login_name: "테스트교사",
+      pin: "123456",
+      active: true,
+      session_version: 1,
+      updated_at: "2026-07-22T09:00:00+09:00",
+    }];
+  }
+
+  currentUser() {
+    const token = sessionStorage.getItem(USER_SESSION_KEY) || "";
+    const tokenParts = token.startsWith("demo-user-session:")
+      ? token.slice("demo-user-session:".length).split(":")
+      : [];
+    const [userId, sessionVersion] = tokenParts;
+    if (userId === "system-admin") return { id: "system-admin", login_name: "관리자" };
+    const user = this.accessUsers.find((item) =>
+      String(item.id) === userId &&
+      item.active !== false &&
+      Number(item.session_version) === Number(sessionVersion)
+    );
+    return user ? publicAccessUser(user) : null;
   }
 
   async request(action, payload = {}) {
     await new Promise((resolve) => setTimeout(resolve, 70));
     const state = this.state;
+    if (!["user_login", "admin_entry_login", "logout"].includes(action) && !this.currentUser()) {
+      throw new ApiError("세션이 만료되었습니다. 다시 로그인하세요.", {
+        code: "SESSION_EXPIRED",
+      });
+    }
+    if (DEMO_ADMIN_ACTIONS.has(action)) {
+      const currentUser = this.currentUser();
+      const expectedAdminSession = currentUser ? `demo-admin-session:${currentUser.id}` : "";
+      if (sessionStorage.getItem(ADMIN_SESSION_KEY) !== expectedAdminSession) {
+        throw new ApiError("관리자 세션이 만료되었습니다. 관리자 암호를 다시 입력하세요.", {
+          code: "ADMIN_SESSION_EXPIRED",
+        });
+      }
+    }
 
     switch (action) {
-      case "school_login":
-        if (!String(payload.school_code || "").trim()) {
-          throw new Error("학교코드를 입력하세요.");
+      case "user_login": {
+        const nameKey = accessUserNameKey(payload.login_name);
+        const user = this.accessUsers.find((item) =>
+          item.active !== false && accessUserNameKey(item.login_name) === nameKey
+        );
+        if (!user || String(payload.pin || "") !== user.pin) {
+          throw new ApiError("접속 이름 또는 PIN을 확인하세요.", {
+            code: "INVALID_LOGIN",
+          });
         }
-        return { session: "demo-teacher-session", bootstrap: this.teacherBootstrap() };
+        const currentUser = publicAccessUser(user);
+        return {
+          user_session: `demo-user-session:${user.id}:${user.session_version}`,
+          current_user: currentUser,
+          bootstrap: this.teacherBootstrap(currentUser),
+        };
+      }
+
+      case "admin_entry_login": {
+        if (payload.password !== "demo-admin") {
+          throw new ApiError("관리자 암호가 올바르지 않습니다.", {
+            code: "INVALID_ADMIN_CREDENTIALS",
+          });
+        }
+        const currentUser = { id: "system-admin", login_name: "관리자" };
+        return {
+          user_session: "demo-user-session:system-admin",
+          admin_session: "demo-admin-session:system-admin",
+          current_user: currentUser,
+          bootstrap: this.adminBootstrap(currentUser),
+        };
+      }
 
       case "admin_login":
         if (payload.password !== "demo-admin") {
-          throw new Error("데모 관리자 암호가 올바르지 않습니다.");
+          throw new ApiError("관리자 암호가 올바르지 않습니다.", {
+            code: "INVALID_ADMIN_CREDENTIALS",
+          });
         }
-        return { admin_session: "demo-admin-session", bootstrap: this.adminBootstrap() };
+        {
+          const currentUser = this.currentUser();
+          return {
+            admin_session: `demo-admin-session:${currentUser.id}`,
+            current_user: currentUser,
+            bootstrap: this.adminBootstrap(currentUser),
+          };
+        }
 
       case "get_bootstrap":
         return this.teacherBootstrap();
 
       case "get_admin_bootstrap":
         return this.adminBootstrap();
+
+      case "save_access_user": {
+        const loginName = normalizeLoginName(payload.login_name);
+        if (!loginName) {
+          throw new ApiError("접속 이름을 입력하세요.", { code: "LOGIN_NAME_REQUIRED" });
+        }
+        const duplicate = this.accessUsers.find((item) =>
+          accessUserNameKey(item.login_name) === accessUserNameKey(loginName) &&
+          String(item.id) !== String(payload.id || "")
+        );
+        if (duplicate) {
+          throw new ApiError("이미 등록된 접속 이름입니다.", {
+            code: "DUPLICATE_LOGIN_NAME",
+          });
+        }
+        const now = new Date().toISOString();
+        if (payload.id) {
+          const existing = this.accessUsers.find((item) => String(item.id) === String(payload.id));
+          if (!existing) {
+            throw new ApiError("접속 사용자를 찾을 수 없습니다.", {
+              code: "ACCESS_USER_NOT_FOUND",
+            });
+          }
+          if (existing.login_name !== loginName) existing.session_version += 1;
+          existing.login_name = loginName;
+          existing.updated_at = now;
+        } else {
+          if (!isSixDigitPin(payload.pin)) {
+            throw new ApiError("PIN은 숫자 6자리로 입력하세요.", { code: "INVALID_PIN" });
+          }
+          this.accessUsers.push({
+            id: makeId("access-user"),
+            login_name: loginName,
+            pin: String(payload.pin),
+            active: true,
+            session_version: 1,
+            updated_at: now,
+          });
+        }
+        return this.adminBootstrap();
+      }
+
+      case "set_access_user_active": {
+        const existing = this.accessUsers.find((item) => String(item.id) === String(payload.id));
+        if (!existing) {
+          throw new ApiError("접속 사용자를 찾을 수 없습니다.", {
+            code: "ACCESS_USER_NOT_FOUND",
+          });
+        }
+        const active = payload.active === true;
+        if (existing.active !== active) existing.session_version += 1;
+        existing.active = active;
+        existing.updated_at = new Date().toISOString();
+        return this.adminBootstrap();
+      }
+
+      case "reset_access_user_pin": {
+        const existing = this.accessUsers.find((item) => String(item.id) === String(payload.id));
+        if (!existing) {
+          throw new ApiError("접속 사용자를 찾을 수 없습니다.", {
+            code: "ACCESS_USER_NOT_FOUND",
+          });
+        }
+        if (!isSixDigitPin(payload.pin)) {
+          throw new ApiError("PIN은 숫자 6자리로 입력하세요.", { code: "INVALID_PIN" });
+        }
+        existing.pin = String(payload.pin);
+        existing.session_version += 1;
+        existing.updated_at = new Date().toISOString();
+        return this.adminBootstrap();
+      }
 
       case "presence_ping":
         return {
@@ -865,27 +1058,29 @@ class DemoRepository {
         return { logged_out: true };
 
       default:
-        throw new Error(`지원하지 않는 데모 작업입니다: ${action}`);
+        throw new Error(`지원하지 않는 작업입니다: ${action}`);
     }
   }
 
-  teacherBootstrap() {
+  teacherBootstrap(currentUser = this.currentUser()) {
     return {
       settings: this.state.settings,
       classes: sortClasses(this.state.classes.filter((item) => item.active !== false)),
       exam_dates: structuredClone(this.state.examDates.filter((item) => item.active !== false)),
+      current_user: currentUser,
     };
   }
 
-  adminBootstrap() {
+  adminBootstrap(currentUser = this.currentUser()) {
     return {
-      ...this.teacherBootstrap(),
+      ...this.teacherBootstrap(currentUser),
       students: sortStudents(this.state.students.filter((item) => item.active !== false)),
       timetable: structuredClone(this.state.timetable),
       subject_catalog: structuredClone(this.state.subjectCatalog),
       exam_notice: structuredClone(this.state.examNotice),
       enrollments: structuredClone(this.state.enrollments),
       seat_charts: structuredClone(this.state.seatCharts),
+      access_users: this.accessUsers.map(publicAccessUser),
     };
   }
 }
@@ -898,13 +1093,13 @@ class AppsScriptRepository {
   async request(action, payload = {}) {
     if (!this.apiUrl || this.apiUrl.includes("__APPS_SCRIPT")) {
       throw new Error(
-        "학교 백엔드 주소가 아직 설정되지 않았습니다. 데모로 먼저 확인하거나 config.js를 연결하세요.",
+        "학교 백엔드 주소가 아직 설정되지 않았습니다. config.js를 연결하세요.",
       );
     }
     const body = {
       action,
       ...payload,
-      school_session: sessionStorage.getItem(SCHOOL_SESSION_KEY) || "",
+      user_session: sessionStorage.getItem(USER_SESSION_KEY) || "",
       admin_session: sessionStorage.getItem(ADMIN_SESSION_KEY) || "",
       client_id: getClientId(),
       request_id: payload.request_id || crypto.randomUUID?.() || makeId("request"),
@@ -973,14 +1168,9 @@ const repository = demoMode
   ? new DemoRepository()
   : new AppsScriptRepository(readConfig().API_URL || "");
 
-export const appMode = {
-  demo: demoMode,
-  name: demoMode ? "데모" : "운영",
-};
-
-export function saveSchoolSession(value) {
-  if (value) sessionStorage.setItem(SCHOOL_SESSION_KEY, value);
-  else sessionStorage.removeItem(SCHOOL_SESSION_KEY);
+export function saveUserSession(value) {
+  if (value) sessionStorage.setItem(USER_SESSION_KEY, value);
+  else sessionStorage.removeItem(USER_SESSION_KEY);
 }
 
 export function saveAdminSession(value) {
@@ -988,8 +1178,8 @@ export function saveAdminSession(value) {
   else sessionStorage.removeItem(ADMIN_SESSION_KEY);
 }
 
-export function hasSchoolSession() {
-  return Boolean(sessionStorage.getItem(SCHOOL_SESSION_KEY));
+export function hasUserSession() {
+  return Boolean(sessionStorage.getItem(USER_SESSION_KEY));
 }
 
 export function hasAdminSession() {
@@ -997,15 +1187,28 @@ export function hasAdminSession() {
 }
 
 export function clearSessions() {
-  sessionStorage.removeItem(SCHOOL_SESSION_KEY);
+  sessionStorage.removeItem(USER_SESSION_KEY);
   sessionStorage.removeItem(ADMIN_SESSION_KEY);
+  sessionStorage.removeItem(LEGACY_SCHOOL_SESSION_KEY);
+}
+
+export function sessionErrorBelongsToCurrentSession(code, userSession, adminSession) {
+  if (code === "ADMIN_SESSION_EXPIRED") {
+    return Boolean(adminSession) && sessionStorage.getItem(ADMIN_SESSION_KEY) === adminSession;
+  }
+  return Boolean(userSession) && sessionStorage.getItem(USER_SESSION_KEY) === userSession;
 }
 
 export async function apiRequest(action, payload) {
+  const requestUserSession = sessionStorage.getItem(USER_SESSION_KEY) || "";
+  const requestAdminSession = sessionStorage.getItem(ADMIN_SESSION_KEY) || "";
   try {
     return await repository.request(action, payload);
   } catch (error) {
-    if (SESSION_CODES.has(error?.code)) {
+    if (
+      SESSION_CODES.has(error?.code) &&
+      sessionErrorBelongsToCurrentSession(error.code, requestUserSession, requestAdminSession)
+    ) {
       if (error.code === "ADMIN_SESSION_EXPIRED") {
         sessionStorage.removeItem(ADMIN_SESSION_KEY);
       } else {

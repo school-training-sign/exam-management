@@ -38,11 +38,14 @@ import {
   buildPersonalTimetable,
   buildSeatSlots,
   classLabel,
+  createIdleLogoutTimer,
   formatKoreanDate,
   formatKoreanWeekday,
   formatPresenceLabel,
   generateSeatAssignment,
+  isSixDigitPin,
   makeId,
+  normalizeLoginName,
   resolveStudentRoom,
   seatChartKey,
   sortStudents,
@@ -51,12 +54,11 @@ import {
 } from "./core.js";
 import {
   apiRequest,
-  appMode,
   clearSessions,
   hasAdminSession,
-  hasSchoolSession,
+  hasUserSession,
   saveAdminSession,
-  saveSchoolSession,
+  saveUserSession,
 } from "./api.js";
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7];
@@ -70,6 +72,8 @@ const EMPTY_BOOTSTRAP = {
   seat_charts: [],
   subject_catalog: {},
   exam_notice: {},
+  access_users: [],
+  current_user: null,
 };
 
 function messageFrom(error) {
@@ -123,6 +127,7 @@ function selectFirst(items, key = "id") {
 }
 
 const OFFICIAL_SCHOOL_NAME = "한양대학교사범대학부속고등학교";
+const SYSTEM_NAME = "한양대학교사범대학부속고등학교 통합 시스템";
 
 function localIsoDate() {
   const now = new Date();
@@ -131,6 +136,15 @@ function localIsoDate() {
     String(now.getMonth() + 1).padStart(2, "0"),
     String(now.getDate()).padStart(2, "0"),
   ].join("-");
+}
+
+function formatUpdatedAt(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "수정 시각 없음";
+  return new Intl.DateTimeFormat("ko-KR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 
 function defaultNoticeGreeting(notice = {}) {
@@ -206,19 +220,30 @@ function LoadingButton({ loading, children, ...props }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
-  const [schoolCode, setSchoolCode] = useState("");
+function LoginScreen({ onLogin, onAdminEntry }) {
+  const [loginName, setLoginName] = useState("");
+  const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [adminDialog, setAdminDialog] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
+    const normalizedName = normalizeLoginName(loginName);
+    if (!normalizedName || !isSixDigitPin(pin)) {
+      setError("접속 이름과 숫자 6자리 PIN을 확인하세요.");
+      return;
+    }
     setLoading(true);
     setError("");
+    saveAdminSession("");
     try {
-      const result = await apiRequest("school_login", { school_code: schoolCode.trim() });
-      saveSchoolSession(result.session);
-      onLogin(result.bootstrap);
+      const result = await apiRequest("user_login", { login_name: normalizedName, pin });
+      saveUserSession(result.user_session);
+      onLogin({
+        ...result.bootstrap,
+        current_user: result.current_user || result.bootstrap?.current_user || null,
+      });
     } catch (nextError) {
       setError(messageFrom(nextError));
     } finally {
@@ -231,40 +256,59 @@ function LoginScreen({ onLogin }) {
       <div className="login-ornament ornament-one" />
       <div className="login-ornament ornament-two" />
       <section className="login-card">
-        <div className="brand-seal"><IconBook size={34} stroke={1.5} /></div>
-        <h1>정기고사<br />관리 시스템</h1>
-        <p className="login-copy">결시 입력부터 고사본부 현황, 자리배치와 출력까지 한 곳에서 관리합니다.</p>
-        <form onSubmit={submit}>
-          <label htmlFor="school-code">학교코드</label>
-          <input
-            id="school-code"
-            value={schoolCode}
-            onChange={(event) => setSchoolCode(event.target.value)}
-            placeholder="학교에서 안내한 코드를 입력하세요"
-            autoComplete="off"
-            autoCapitalize="characters"
-            required
-          />
-          <LoadingButton className="button button-primary button-wide" loading={loading} type="submit">
-            접속하기 <IconChevronRight size={18} />
-          </LoadingButton>
-        </form>
-        <Notice tone="error">{error}</Notice>
-        {appMode.demo ? (
-          <div className="demo-hint">
-            <strong>데모 모드</strong>
-            <span>학교코드는 아무 값이나, 관리자 암호는 <code>demo-admin</code>을 사용하세요.</span>
-          </div>
-        ) : (
-          <a className="demo-link" href="?demo=1">실제 데이터가 없는 데모로 둘러보기</a>
-        )}
-        <p className="privacy-note"><IconShieldLock size={15} /> 입력 정보는 학교 소유 시트에만 저장됩니다.</p>
+          <div className="brand-seal"><IconBook size={34} stroke={1.5} /></div>
+          <h1>{SYSTEM_NAME}</h1>
+          <form onSubmit={submit}>
+            <label htmlFor="login-name">접속 이름</label>
+            <input
+              id="login-name"
+              value={loginName}
+              onChange={(event) => setLoginName(event.target.value)}
+              placeholder="관리자가 등록한 이름"
+              autoComplete="username"
+              maxLength="50"
+              required
+            />
+            <label htmlFor="login-pin">개인 PIN</label>
+            <input
+              id="login-pin"
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              maxLength="6"
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="숫자 6자리"
+              autoComplete="current-password"
+              required
+            />
+            <LoadingButton className="button button-primary button-wide" loading={loading} type="submit">
+              접속하기 <IconChevronRight size={18} />
+            </LoadingButton>
+            <button className="button button-light button-wide login-admin-button" type="button" onClick={() => setAdminDialog(true)}>
+              <IconShieldLock size={17} /> 관리자 설정
+            </button>
+          </form>
+          <Notice tone="error">{error}</Notice>
       </section>
+      <AdminDialog
+          open={adminDialog}
+          entry
+          onClose={() => setAdminDialog(false)}
+          onUnlock={(result) => {
+            saveUserSession(result.user_session);
+            saveAdminSession(result.admin_session);
+            onAdminEntry({
+              ...result.bootstrap,
+              current_user: result.current_user || result.bootstrap?.current_user || null,
+            });
+          }}
+      />
     </main>
   );
 }
 
-function AdminDialog({ open, onClose, onUnlock }) {
+function AdminDialog({ open, onClose, onUnlock, entry = false }) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -314,9 +358,10 @@ function AdminDialog({ open, onClose, onUnlock }) {
     setLoading(true);
     setError("");
     try {
-      const result = await apiRequest("admin_login", { password });
+      const result = await apiRequest(entry ? "admin_entry_login" : "admin_login", { password });
+      if (result.user_session) saveUserSession(result.user_session);
       saveAdminSession(result.admin_session);
-      onUnlock(result.bootstrap);
+      onUnlock(result);
       onClose();
     } catch (nextError) {
       setError(messageFrom(nextError));
@@ -334,8 +379,8 @@ function AdminDialog({ open, onClose, onUnlock }) {
           <IconX size={20} />
         </button>
         <span className="dialog-icon"><IconLock size={26} /></span>
-        <h2 id="admin-title">관리자 확인</h2>
-        <p>고사본부·자리배치·설정은 관리자 암호가 필요합니다.</p>
+        <h2 id="admin-title">{entry ? "관리자 설정" : "관리자 확인"}</h2>
+        <p>{entry ? "관리자 암호로 접속 사용자와 고사 설정을 관리합니다." : "고사본부·자리배치·설정은 관리자 암호가 필요합니다."}</p>
         <form onSubmit={submit}>
           <label htmlFor="admin-password">관리자 암호</label>
           <input
@@ -348,7 +393,7 @@ function AdminDialog({ open, onClose, onUnlock }) {
             required
           />
           <LoadingButton className="button button-primary button-wide" loading={loading} type="submit">
-            관리자 화면 열기
+            {entry ? "관리자 설정 열기" : "관리자 화면 열기"}
           </LoadingButton>
         </form>
         <Notice tone="error">{error}</Notice>
@@ -1459,7 +1504,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
 }
 
 function SetupPanel({ bootstrap, onBootstrap }) {
-  const [active, setActive] = useState("dates");
+  const [active, setActive] = useState("access-users");
   const [newDate, setNewDate] = useState("");
   const [newDateLabel, setNewDateLabel] = useState("");
   const [grade, setGrade] = useState(1);
@@ -1485,6 +1530,9 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   const [printClassId, setPrintClassId] = useState(selectFirst(bootstrap.classes));
   const [cleanupDate, setCleanupDate] = useState("");
   const [examNoticeDraft, setExamNoticeDraft] = useState(() => noticeDraftFrom(bootstrap));
+  const [newAccessUser, setNewAccessUser] = useState({ login_name: "", pin: "" });
+  const [accessUserNames, setAccessUserNames] = useState({});
+  const [accessUserPins, setAccessUserPins] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const studentFileRef = useRef(null);
@@ -1509,6 +1557,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
       { number: item.number, name: item.name },
     ])));
   }, [bootstrap.students, selectedClassId]);
+
+  useEffect(() => {
+    const users = Array.isArray(bootstrap.access_users) ? bootstrap.access_users : [];
+    setAccessUserNames(Object.fromEntries(users.map((item) => [String(item.id), item.login_name])));
+    setAccessUserPins(Object.fromEntries(users.map((item) => [String(item.id), ""])));
+  }, [bootstrap.access_users]);
 
   useEffect(() => {
     const available = bootstrap.classes
@@ -1548,6 +1602,45 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     if (await commit("save_exam_dates", { exam_dates: next }, "고사일을 저장했습니다.")) {
       setNewDate(""); setNewDateLabel("");
     }
+  }
+
+  async function addAccessUser(event) {
+    event.preventDefault();
+    const loginName = normalizeLoginName(newAccessUser.login_name);
+    if (!loginName) return setError("접속 이름을 입력하세요.");
+    if (!isSixDigitPin(newAccessUser.pin)) return setError("PIN은 숫자 6자리로 입력하세요.");
+    const result = await commit("save_access_user", {
+      login_name: loginName,
+      pin: newAccessUser.pin,
+    }, "접속 사용자를 추가했습니다.");
+    if (result) setNewAccessUser({ login_name: "", pin: "" });
+  }
+
+  async function saveAccessUserName(user) {
+    const loginName = normalizeLoginName(accessUserNames[String(user.id)]);
+    if (!loginName) return setError("접속 이름을 입력하세요.");
+    await commit("save_access_user", {
+      id: user.id,
+      login_name: loginName,
+    }, "접속 이름을 수정했습니다. 기존 사용자 세션은 만료됩니다.");
+  }
+
+  async function resetAccessUserPin(user) {
+    const pin = accessUserPins[String(user.id)] || "";
+    if (!isSixDigitPin(pin)) return setError("새 PIN은 숫자 6자리로 입력하세요.");
+    const result = await commit("reset_access_user_pin", {
+      id: user.id,
+      pin,
+    }, "PIN을 재설정했습니다. 기존 사용자 세션은 만료됩니다.");
+    if (result) setAccessUserPins((current) => ({ ...current, [user.id]: "" }));
+  }
+
+  async function setAccessUserActive(user, active) {
+    if (!active && !window.confirm(`${user.login_name} 사용자의 접속을 중지할까요? 현재 세션도 만료됩니다.`)) return;
+    await commit("set_access_user_active", {
+      id: user.id,
+      active,
+    }, active ? "사용자 접속을 허용했습니다." : "사용자 접속을 중지했습니다.");
   }
 
   async function deleteExamDate(item) {
@@ -1916,6 +2009,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   }
 
   const menu = [
+    ["access-users", IconUserCheck, "접속 사용자"],
     ["dates", IconCalendar, "고사일"],
     ["classes", IconUsers, "학급·학생"],
     ["timetable", IconClock, "시간표"],
@@ -1934,6 +2028,37 @@ function SetupPanel({ bootstrap, onBootstrap }) {
           {menu.map(([id, Icon, label]) => <button key={id} className={active === id ? "active" : ""} onClick={() => setActive(id)}><Icon size={18} /><span>{label}</span><IconChevronRight size={16} /></button>)}
         </nav>
         <div className="settings-content">
+          {active === "access-users" ? (
+            <article className="panel-card access-users-panel">
+              <div className="card-heading">
+                <div><IconUserCheck size={20} /><h3>접속 사용자 관리</h3></div>
+                <span>{(bootstrap.access_users || []).filter((item) => item.active !== false).length}명 접속 허용</span>
+              </div>
+              <p className="body-copy">등록된 접속 이름과 개인 PIN을 가진 사용자만 시스템에 들어올 수 있습니다. 동명이인은 담당 학년처럼 구분 문구를 이름에 덧붙이세요.</p>
+              <form className="access-user-create" onSubmit={addAccessUser}>
+                <label>접속 이름<input value={newAccessUser.login_name} onChange={(event) => setNewAccessUser({ ...newAccessUser, login_name: event.target.value })} maxLength="50" autoComplete="off" placeholder="예: 김민수(1학년)" required /></label>
+                <label>개인 PIN<input type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={newAccessUser.pin} onChange={(event) => setNewAccessUser({ ...newAccessUser, pin: event.target.value.replace(/\D/g, "").slice(0, 6) })} autoComplete="new-password" placeholder="숫자 6자리" required /></label>
+                <button className="button button-secondary" type="submit"><IconPlus size={17} /> 사용자 추가</button>
+              </form>
+              <div className="access-user-list">
+                {(bootstrap.access_users || []).length ? (bootstrap.access_users || []).map((user) => (
+                  <section className={`access-user-item ${user.active === false ? "inactive" : ""}`} key={user.id} aria-label={`${user.login_name} 접속 사용자`}>
+                    <header>
+                      <div><strong>{user.login_name}</strong><span>{formatUpdatedAt(user.updated_at)} 수정</span></div>
+                      <label className="access-user-active"><span>{user.active === false ? "접속 중지" : "접속 허용"}</span><input type="checkbox" checked={user.active !== false} onChange={(event) => setAccessUserActive(user, event.target.checked)} /></label>
+                    </header>
+                    <div className="access-user-edit-grid">
+                      <label>접속 이름<input value={accessUserNames[String(user.id)] ?? user.login_name} onChange={(event) => setAccessUserNames((current) => ({ ...current, [user.id]: event.target.value }))} maxLength="50" /></label>
+                      <button className="button button-light" type="button" onClick={() => saveAccessUserName(user)}><IconDeviceFloppy size={16} /> 이름 저장</button>
+                      <label>새 PIN<input type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={accessUserPins[String(user.id)] || ""} onChange={(event) => setAccessUserPins((current) => ({ ...current, [user.id]: event.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="new-password" placeholder="숫자 6자리" /></label>
+                      <button className="button button-light" type="button" onClick={() => resetAccessUserPin(user)}><IconRefresh size={16} /> PIN 재설정</button>
+                    </div>
+                  </section>
+                )) : <EmptyState icon={IconUserCheck} title="등록된 접속 사용자가 없습니다" description="위 입력란에서 첫 사용자를 등록하세요. 관리자 암호로는 언제든 이 화면에 다시 들어올 수 있습니다." />}
+              </div>
+            </article>
+          ) : null}
+
           {active === "dates" ? (
             <article className="panel-card">
               <div className="card-heading"><div><IconCalendar size={20} /><h3>고사일 관리</h3></div></div>
@@ -2189,8 +2314,8 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 }
 
 export function App() {
-  const [loggedIn, setLoggedIn] = useState(hasSchoolSession());
-  const [admin, setAdmin] = useState(hasAdminSession());
+  const [loggedIn, setLoggedIn] = useState(hasUserSession());
+  const [admin, setAdmin] = useState(hasUserSession() && hasAdminSession());
   const [bootstrap, setBootstrap] = useState(EMPTY_BOOTSTRAP);
   const [activeTab, setActiveTab] = useState("absence");
   const [adminDialog, setAdminDialog] = useState(false);
@@ -2205,6 +2330,10 @@ export function App() {
       .then((value) => setBootstrap((current) => ({ ...current, ...value })))
       .catch((error) => {
         setStartupError(messageFrom(error));
+        if (error?.code === "ADMIN_SESSION_EXPIRED") {
+          setAdmin(false);
+          return;
+        }
         if (/세션|로그인|만료/.test(messageFrom(error))) {
           clearSessions(); setLoggedIn(false); setAdmin(false);
         }
@@ -2221,6 +2350,7 @@ export function App() {
           settings: current.settings,
           classes: current.classes,
           exam_dates: current.exam_dates,
+          current_user: current.current_user,
         }));
         setStartupError("관리자 세션이 만료되었습니다. 관리자 화면을 열 때 암호를 다시 입력하세요.");
         return;
@@ -2229,7 +2359,7 @@ export function App() {
       setAdmin(false);
       setActiveTab("absence");
       setBootstrap(EMPTY_BOOTSTRAP);
-      setStartupError("세션이 만료되었습니다. 학교코드로 다시 접속하세요.");
+      setStartupError("세션이 만료되었습니다. 접속 이름과 PIN으로 다시 로그인하세요.");
     };
     window.addEventListener("exam-session-expired", handleExpired);
     return () => window.removeEventListener("exam-session-expired", handleExpired);
@@ -2266,7 +2396,7 @@ export function App() {
           });
         }
       } catch (error) {
-        if (!cancelled && hasSchoolSession()) {
+        if (!cancelled && hasUserSession()) {
           setPresence((current) => ({ ...current, status: "disconnected" }));
         }
       } finally {
@@ -2308,23 +2438,22 @@ export function App() {
 
   useEffect(() => {
     if (!loggedIn) return undefined;
-    let timer;
+    const idleTimer = createIdleLogoutTimer(() => {
+      apiRequest("logout").catch(() => {});
+      clearSessions();
+      setLoggedIn(false);
+      setAdmin(false);
+      setActiveTab("absence");
+    });
     const reset = () => {
       lastActivityAtRef.current = Date.now();
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        apiRequest("logout").catch(() => {});
-        clearSessions();
-        setLoggedIn(false);
-        setAdmin(false);
-        setActiveTab("absence");
-      }, 5 * 60 * 1000);
+      idleTimer.reset();
     };
     const events = ["pointerdown", "keydown", "scroll", "touchstart"];
     events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
     reset();
     return () => {
-      clearTimeout(timer);
+      idleTimer.dispose();
       events.forEach((event) => window.removeEventListener(event, reset));
     };
   }, [loggedIn]);
@@ -2344,10 +2473,28 @@ export function App() {
     setLoggedIn(false);
     setAdmin(false);
     setBootstrap(EMPTY_BOOTSTRAP);
+    setStartupError("");
   }
 
   if (!loggedIn) {
-    return <LoginScreen onLogin={(value) => { setBootstrap({ ...EMPTY_BOOTSTRAP, ...value }); setLoggedIn(true); }} />;
+    return (
+      <LoginScreen
+        onLogin={(value) => {
+          setBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
+          setAdmin(false);
+          setActiveTab("absence");
+          setStartupError("");
+          setLoggedIn(true);
+        }}
+        onAdminEntry={(value) => {
+          setBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
+          setAdmin(true);
+          setActiveTab("settings");
+          setStartupError("");
+          setLoggedIn(true);
+        }}
+      />
+    );
   }
 
   const tabs = [
@@ -2361,7 +2508,7 @@ export function App() {
     <div className="app-shell">
       <header className="app-header no-print">
         <div className="header-inner">
-          <div className="header-brand"><span><IconBook size={22} /></span><div><strong>{bootstrap.settings.app_name || "정기고사 관리 시스템"}</strong><small>{bootstrap.settings.school_name || OFFICIAL_SCHOOL_NAME}</small></div></div>
+          <div className="header-brand"><span title={SYSTEM_NAME}><IconBook size={22} /></span><div><strong>{SYSTEM_NAME}</strong><small>{bootstrap.settings.school_name || OFFICIAL_SCHOOL_NAME}</small></div></div>
           <div className="header-actions">
             <span
               className={`connection-badge ${presence.status}`}
@@ -2377,7 +2524,10 @@ export function App() {
               <span className="idle-label-full">5분 미사용 시 자동 로그아웃</span>
               <span className="idle-label-short" aria-hidden="true">5분</span>
             </span>
-            <span className={`mode-badge ${appMode.demo ? "demo" : ""}`}>{appMode.name}</span>
+            <span className="current-user-badge" title={bootstrap.current_user?.login_name || "접속 사용자"}>
+              <IconUserCheck size={14} aria-hidden="true" />
+              <span>{bootstrap.current_user?.login_name || "접속 사용자"}</span>
+            </span>
             {admin ? <span className="admin-badge"><IconShieldLock size={14} /> 관리자</span> : null}
             <button className="icon-button header-logout" onClick={logout} aria-label="로그아웃"><IconLogout size={19} /></button>
           </div>
@@ -2399,16 +2549,17 @@ export function App() {
         {activeTab === "settings" && admin ? <SetupPanel bootstrap={bootstrap} onBootstrap={setBootstrap} /> : null}
       </main>
 
-      <footer className="app-footer no-print">
-        <span>학교 소유 Google Sheets · Apps Script</span>
-      </footer>
-
       <AdminDialog
         open={adminDialog}
         onClose={() => { setAdminDialog(false); setPendingTab(""); }}
-        onUnlock={(value) => {
-          setBootstrap((current) => ({ ...current, ...value }));
+        onUnlock={(result) => {
+          setBootstrap((current) => ({
+            ...current,
+            ...result.bootstrap,
+            current_user: result.current_user || result.bootstrap?.current_user || current.current_user,
+          }));
           setAdmin(true);
+          setStartupError("");
           setActiveTab(pendingTab || "hq");
         }}
       />

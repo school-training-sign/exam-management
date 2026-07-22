@@ -134,7 +134,7 @@ export function createDemoState() {
   return structuredClone({
     settings: {
       school_name: "한양대학교사범대학부속고등학교",
-      app_name: "정기고사 관리 시스템",
+      app_name: "한양대학교사범대학부속고등학교 통합 시스템",
       timezone: "Asia/Seoul",
     },
     classes,

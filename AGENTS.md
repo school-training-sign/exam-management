@@ -11,8 +11,11 @@ When implementing from a selected generated mock, treat that image as the source
 - Build an independent Korean school exam-management app grounded in the captured `hirame-ki.github.io/exam` desktop flow.
 - Use the source navy/gold visual language, Pretendard UI text, and a Korean serif display face.
 - Fix the source's mobile horizontal overflow with a single-column responsive layout and horizontally scrollable navigation.
-- The production backend is a school-owned Google Sheet with bound Apps Script. The frontend must never contain the school code, administrator password, student names, or backend secrets.
-- Teacher access uses a school-code session. Headquarters, seating, setup, destructive actions, and exports require an administrator session.
+- The production backend is a school-owned Google Sheet with bound Apps Script. The frontend must never contain real staff login names, PINs, administrator passwords, student names, or backend secrets.
+- Teacher access uses an administrator-managed login name plus a six-digit personal PIN. Headquarters, seating, setup, destructive actions, and exports require an administrator session.
+- The login page exposes no staff-name directory. A separate administrator entry allows initial access-user setup and recovery when no users are active.
+- Use `한양대학교사범대학부속고등학교 통합 시스템` as the product name across the login page, header, browser metadata, demo data, and public configuration.
+- Do not show demo labels, demo links, infrastructure copy, or a product footer in the application UI.
 - `?demo=1` must use synthetic data only and must never send writes to the production endpoint.
 - Display exam dates with the full Korean weekday throughout the UI, and show the weekday immediately beside the administrator's date input.
 - Keep the connection count and five-minute idle-session notice together in the upper-right header; shorten only the visible idle label to `5분` at 560px and below.

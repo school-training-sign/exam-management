@@ -11,11 +11,14 @@ import {
   buildExamNoticeTitle,
   buildPersonalTimetable,
   buildSeatSlots,
+  createIdleLogoutTimer,
   filterAbsences,
   formatKoreanDate,
   formatKoreanWeekday,
   formatPresenceLabel,
   generateSeatAssignment,
+  isSixDigitPin,
+  normalizeLoginName,
   normalizeEnrollmentRows,
   normalizeManualSeatRows,
   normalizeStudentRows,
@@ -23,6 +26,42 @@ import {
   seatChartKey,
   summarizeAbsences,
 } from "../src/core.js";
+
+test("미사용 타이머는 5분 뒤 로그아웃하고 활동 때마다 다시 시작한다", () => {
+  const scheduled = [];
+  const cleared = [];
+  let logoutCount = 0;
+  const timer = createIdleLogoutTimer(
+    () => { logoutCount += 1; },
+    {
+      setTimer(callback, delay) {
+        const id = scheduled.length + 1;
+        scheduled.push({ id, callback, delay });
+        return id;
+      },
+      clearTimer(id) {
+        cleared.push(id);
+      },
+    },
+  );
+
+  timer.reset();
+  assert.equal(scheduled[0].delay, 300_000);
+  timer.reset();
+  assert.deepEqual(cleared, [1]);
+  scheduled[1].callback();
+  assert.equal(logoutCount, 1);
+  timer.dispose();
+  assert.deepEqual(cleared, [1, 2]);
+});
+
+test("접속 이름은 유니코드와 연속 공백을 정규화하고 PIN은 숫자 6자리만 허용한다", () => {
+  assert.equal(normalizeLoginName("  테스트　교사  "), "테스트 교사");
+  assert.equal(normalizeLoginName("ＫＩＭ  선생님"), "KIM 선생님");
+  assert.equal(isSixDigitPin("123456"), true);
+  assert.equal(isSixDigitPin("12345"), false);
+  assert.equal(isSixDigitPin("12가456"), false);
+});
 
 test("교과목 엑셀은 과목명 헤더를 인식하고 이름을 정리해 정렬한다", () => {
   const longName = `심화${"가".repeat(90)}`;
