@@ -27,6 +27,13 @@ const privateSchoolCode = String(process.env.PRIVATE_SCHOOL_CODE || "").trim();
 if (privateSchoolCode) {
   forbidden.push(["운영 학교코드", new RegExp(privateSchoolCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")]);
 }
+const retiredSchoolCode = ["HANYANG", "3520"].join("");
+const sourcePackagingSheetId = ["1ukMUIjGhRILLj", "XwpTmxm3NecSz", "-5cD3khRnD1Xk6Nx8"].join("");
+forbidden.push(
+  ["폐기된 운영 학교코드", new RegExp(retiredSchoolCode, "i")],
+  ["외부 원안 포장 시트 ID", new RegExp(sourcePackagingSheetId, "i")],
+  ["외부 Google Sheets 주소", /https:\/\/docs\.google\.com\/spreadsheets\/d\//i],
+);
 const failures = [];
 for (const [label, pattern] of forbidden) {
   for (const [file, content] of contents) {
@@ -76,6 +83,16 @@ for (const phrase of [
 for (const legacyContract of ["school_login", "school_code", "school_session"]) {
   if (apiSource.includes(legacyContract) || appSource.includes(legacyContract)) {
     failures.push(`이전 학교코드 API 계약이 남아 있습니다: ${legacyContract}`);
+  }
+}
+for (const requiredPackagingTerm of [
+  "고사 원안 포장",
+  "redeem_exam_packaging_invite",
+  "save_exam_packaging_items",
+  "exam-management:packaging-session",
+]) {
+  if (!appSource.includes(requiredPackagingTerm) && !apiSource.includes(requiredPackagingTerm)) {
+    failures.push(`원안 포장 필수 구현이 없습니다: ${requiredPackagingTerm}`);
   }
 }
 const apiUrl = config.match(/API_URL:\s*["']([^"']*)["']/)?.[1] || "";

@@ -22,3 +22,8 @@ When implementing from a selected generated mock, treat that image as the source
 - Use `한양대학교사범대학부속고등학교` as the synthetic demo school name and omit decorative English eyebrow text from every screen.
 - Timetable subjects use a per-grade Excel-backed recommendation catalog, but administrators may still type an unlisted subject directly. The `전체` class toggle expands to real active class IDs when saved.
 - The parent notice combines grades 1–3 on one A4 landscape page using all active exam dates, with editable greeting, notes, issue date, and issuer.
+- Add `고사 원안 포장` as the fifth top-level menu. Normal logged-in users may edit the full shared packaging table.
+- Secret packaging links use a URL fragment only for first redemption, remove the raw token immediately, and expose only the packaging screen with a 30-minute idle session.
+- Packaging dates, 25-minute slot rows, breaks, capacity, deadline, and staff assignments are administrator configuration; subject rows always originate from the integrated timetable.
+- Render packaging as tables on desktop and one-column date/slot cards on 390px mobile. Print the schedule and exam-answer views separately in A4 landscape and export them as two Excel sheets.
+- Never copy the external packaging sheet ID, operational dates, or real staff names into the public repository or demo data.

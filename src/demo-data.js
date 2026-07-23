@@ -85,7 +85,32 @@ const timetable = [
     room_name: "",
     class_ids: "c21",
   },
-];
+].map((item) => ({
+  ...item,
+  representative_teacher: "",
+  answer_sheet_type: "",
+  packaging_date: "",
+  packaging_slot_id: "",
+  packaging_revision: 0,
+  packaging_updated_at: "",
+}));
+
+Object.assign(timetable[0], {
+  representative_teacher: "가상교사 가",
+  answer_sheet_type: "card",
+  packaging_date: "2026-07-17",
+  packaging_slot_id: "slot-1",
+  packaging_revision: 1,
+  packaging_updated_at: "2026-07-15T15:10:00+09:00",
+});
+Object.assign(timetable[4], {
+  representative_teacher: "가상교사 나",
+  answer_sheet_type: "a4",
+  packaging_date: "2026-07-17",
+  packaging_slot_id: "slot-1",
+  packaging_revision: 1,
+  packaging_updated_at: "2026-07-15T15:12:00+09:00",
+});
 
 const subjectCatalog = {
   1: ["국어", "경제", "세계사와 지리", "수학"],
@@ -101,6 +126,55 @@ const examNotice = {
   notes: [],
   issue_date: "2026-07-10",
   issuer: "한양대학교사범대학부속고등학교장",
+};
+
+const examPackagingConfig = {
+  revision: 1,
+  input_deadline: "2099-12-31T18:00:00+09:00",
+  capacity: 3,
+  packaging_dates: ["2026-07-17", "2026-07-18"],
+  rows: [
+    {
+      id: "slot-1",
+      kind: "slot",
+      period_label: "1회",
+      start_time: "13:00",
+      end_time: "13:25",
+      note: "",
+      sort_order: 1,
+    },
+    {
+      id: "break-1",
+      kind: "break",
+      period_label: "쉬는 시간",
+      start_time: "13:25",
+      end_time: "13:35",
+      note: "",
+      sort_order: 2,
+    },
+    {
+      id: "slot-2",
+      kind: "slot",
+      period_label: "2회",
+      start_time: "13:35",
+      end_time: "14:00",
+      note: "",
+      sort_order: 3,
+    },
+    {
+      id: "slot-3",
+      kind: "slot",
+      period_label: "3회",
+      start_time: "14:00",
+      end_time: "14:25",
+      note: "",
+      sort_order: 4,
+    },
+  ],
+  staff_assignments: [
+    { packaging_date: "2026-07-17", slot_id: "slot-1", staff_name: "교무담당 가" },
+    { packaging_date: "2026-07-17", slot_id: "slot-2", staff_name: "교무담당 나" },
+  ],
 };
 
 const enrollments = [
@@ -143,6 +217,7 @@ export function createDemoState() {
     timetable,
     subjectCatalog,
     examNotice,
+    examPackagingConfig,
     enrollments,
     absences: [absence],
     completions: [completion],

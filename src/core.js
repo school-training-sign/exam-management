@@ -682,6 +682,271 @@ export function buildExamNoticeSchedule({
   return { grades, rows };
 }
 
+export const EXAM_PACKAGING_ANSWER_SHEET_TYPES = ["", "card", "a4"];
+
+function normalizePackagingRow(row = {}, index = 0) {
+  return {
+    id: compactText(row.id, 80),
+    kind: compactText(row.kind, 20) || "slot",
+    period_label: compactText(row.period_label, 80),
+    start_time: compactText(row.start_time, 10),
+    end_time: compactText(row.end_time, 10),
+    note: compactText(row.note, 160),
+    sort_order: Number.isFinite(Number(row.sort_order))
+      ? Number(row.sort_order)
+      : index + 1,
+  };
+}
+
+export function normalizeExamPackagingConfig(config = {}) {
+  const source = config && typeof config === "object" && !Array.isArray(config)
+    ? config
+    : {};
+  return {
+    revision: Math.max(0, Math.floor(Number(source.revision) || 0)),
+    input_deadline: compactText(source.input_deadline, 40),
+    capacity: Number(source.capacity ?? 3),
+    packaging_dates: Array.isArray(source.packaging_dates)
+      ? source.packaging_dates.map((value) => compactText(value, 20)).filter(Boolean)
+      : [],
+    rows: Array.isArray(source.rows)
+      ? source.rows.map(normalizePackagingRow)
+      : [],
+    staff_assignments: Array.isArray(source.staff_assignments)
+      ? source.staff_assignments.map((item = {}) => ({
+          packaging_date: compactText(item.packaging_date, 20),
+          slot_id: compactText(item.slot_id, 80),
+          staff_name: compactText(item.staff_name, 100),
+        }))
+      : [],
+  };
+}
+
+function validIsoDate(value) {
+  return Boolean(parseIsoDate(value));
+}
+
+function validTime(value) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
+  return Boolean(match && Number(match[1]) < 24 && Number(match[2]) < 60);
+}
+
+function clockMinutes(value) {
+  if (!validTime(value)) return NaN;
+  const [hour, minute] = String(value).split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function validIsoDateTime(value) {
+  if (!value) return true;
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|([+-])(\d{2}):(\d{2}))?$/.exec(value);
+  if (!match || !validIsoDate(match[1])) {
+    return false;
+  }
+  if (
+    Number(match[2]) > 23 ||
+    Number(match[3]) > 59 ||
+    Number(match[4] || 0) > 59 ||
+    Number(match[6] || 0) > 23 ||
+    Number(match[7] || 0) > 59
+  ) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
+export function validateExamPackagingConfig(config = {}) {
+  const normalized = normalizeExamPackagingConfig(config);
+  const errors = [];
+  const push = (code, details = {}) => errors.push({ code, ...details });
+
+  if (!Number.isInteger(normalized.capacity) || normalized.capacity < 1 || normalized.capacity > 20) {
+    push("INVALID_PACKAGING_CAPACITY", { field: "capacity" });
+  }
+  if (!validIsoDateTime(normalized.input_deadline)) {
+    push("INVALID_PACKAGING_DEADLINE", { field: "input_deadline" });
+  }
+
+  const dateSet = new Set();
+  normalized.packaging_dates.forEach((value, index) => {
+    if (!validIsoDate(value)) {
+      push("INVALID_PACKAGING_DATE", { field: "packaging_dates", index });
+    } else if (dateSet.has(value)) {
+      push("DUPLICATE_PACKAGING_DATE", { field: "packaging_dates", index, value });
+    }
+    dateSet.add(value);
+  });
+
+  const rowIds = new Set();
+  const timeRanges = new Set();
+  normalized.rows.forEach((row, index) => {
+    if (!row.id) {
+      push("PACKAGING_ROW_ID_REQUIRED", { field: "rows", index });
+    } else if (rowIds.has(row.id)) {
+      push("DUPLICATE_PACKAGING_ROW_ID", { field: "rows", index, id: row.id });
+    }
+    rowIds.add(row.id);
+    if (!new Set(["slot", "break"]).has(row.kind)) {
+      push("INVALID_PACKAGING_ROW_KIND", { field: "rows", index, id: row.id });
+    }
+    if (!row.period_label) {
+      push("PACKAGING_ROW_LABEL_REQUIRED", { field: "rows", index, id: row.id });
+    }
+    if (!validTime(row.start_time) || !validTime(row.end_time) || row.start_time >= row.end_time) {
+      push("INVALID_PACKAGING_ROW_TIME", { field: "rows", index, id: row.id });
+    } else {
+      if (row.kind === "slot" && clockMinutes(row.end_time) - clockMinutes(row.start_time) !== 25) {
+        push("INVALID_PACKAGING_SLOT_DURATION", { field: "rows", index, id: row.id });
+      }
+      const timeKey = `${row.start_time}|${row.end_time}`;
+      if (timeRanges.has(timeKey)) {
+        push("DUPLICATE_PACKAGING_TIME", { field: "rows", index, id: row.id });
+      }
+      timeRanges.add(timeKey);
+    }
+  });
+
+  const chronologicalRows = normalized.rows
+    .filter((row) => validTime(row.start_time) && validTime(row.end_time) && row.start_time < row.end_time)
+    .slice()
+    .sort((left, right) => left.start_time.localeCompare(right.start_time) || left.end_time.localeCompare(right.end_time));
+  for (let index = 1; index < chronologicalRows.length; index += 1) {
+    if (chronologicalRows[index].start_time < chronologicalRows[index - 1].end_time) {
+      push("OVERLAPPING_PACKAGING_TIME", {
+        field: "rows",
+        id: chronologicalRows[index].id,
+      });
+    }
+  }
+
+  const staffKeys = new Set();
+  normalized.staff_assignments.forEach((item, index) => {
+    const key = `${item.packaging_date}|${item.slot_id}`;
+    if (!dateSet.has(item.packaging_date) || !rowIds.has(item.slot_id) || !item.staff_name) {
+      push("INVALID_PACKAGING_STAFF_ASSIGNMENT", {
+        field: "staff_assignments",
+        index,
+      });
+    } else if (staffKeys.has(key)) {
+      push("DUPLICATE_PACKAGING_STAFF_ASSIGNMENT", {
+        field: "staff_assignments",
+        index,
+      });
+    }
+    staffKeys.add(key);
+  });
+
+  return { ok: errors.length === 0, errors, config: normalized };
+}
+
+export function sortExamPackagingItems(items = []) {
+  return [...items].sort(
+    (left, right) =>
+      String(left.exam_date || "").localeCompare(String(right.exam_date || "")) ||
+      Number(left.period || 0) - Number(right.period || 0) ||
+      String(left.start_time || "").localeCompare(String(right.start_time || "")) ||
+      Number(left.grade || 0) - Number(right.grade || 0) ||
+      compactText(left.subject_name, 80).localeCompare(compactText(right.subject_name, 80), "ko") ||
+      String(left.timetable_id || left.id || "").localeCompare(String(right.timetable_id || right.id || "")),
+  );
+}
+
+export function summarizeExamPackaging(items = []) {
+  const summary = {
+    total: 0,
+    assigned: 0,
+    unassigned: 0,
+    answer_selected: 0,
+    answer_unselected: 0,
+    card: 0,
+    a4: 0,
+    representative_missing: 0,
+  };
+  items.forEach((item) => {
+    summary.total += 1;
+    const assigned = Boolean(item.packaging_date && item.packaging_slot_id);
+    if (assigned) summary.assigned += 1;
+    else summary.unassigned += 1;
+    if (item.answer_sheet_type === "card" || item.answer_sheet_type === "a4") {
+      summary.answer_selected += 1;
+      summary[item.answer_sheet_type] += 1;
+    } else {
+      summary.answer_unselected += 1;
+    }
+    if (!compactText(item.representative_teacher, 100)) summary.representative_missing += 1;
+  });
+  return summary;
+}
+
+export function groupExamPackagingSchedule(items = [], config = {}) {
+  const normalized = normalizeExamPackagingConfig(config);
+  const sortedRows = [...normalized.rows].sort(
+    (left, right) =>
+      Number(left.sort_order) - Number(right.sort_order) ||
+      left.start_time.localeCompare(right.start_time) ||
+      left.id.localeCompare(right.id),
+  );
+  const staffMap = new Map(
+    normalized.staff_assignments.map((item) => [
+      `${item.packaging_date}|${item.slot_id}`,
+      item.staff_name,
+    ]),
+  );
+  const itemMap = new Map();
+  const unassigned = [];
+  sortExamPackagingItems(items).forEach((item) => {
+    if (!item.packaging_date || !item.packaging_slot_id) {
+      unassigned.push(item);
+      return;
+    }
+    const key = `${item.packaging_date}|${item.packaging_slot_id}`;
+    if (!itemMap.has(key)) itemMap.set(key, []);
+    itemMap.get(key).push(item);
+  });
+  const dates = [...normalized.packaging_dates].sort().map((packagingDate) => ({
+    packaging_date: packagingDate,
+    rows: sortedRows.map((row) => ({
+      ...row,
+      staff_name: staffMap.get(`${packagingDate}|${row.id}`) || "",
+      items: row.kind === "slot"
+        ? (itemMap.get(`${packagingDate}|${row.id}`) || [])
+        : [],
+    })),
+  }));
+  return { dates, unassigned };
+}
+
+export function analyzeExamPackagingConfigImpact(currentConfig = {}, nextConfig = {}, items = []) {
+  const current = normalizeExamPackagingConfig(currentConfig);
+  const next = normalizeExamPackagingConfig(nextConfig);
+  const nextDates = new Set(next.packaging_dates);
+  const nextSlots = new Set(next.rows.filter((row) => row.kind === "slot").map((row) => row.id));
+  const removedDates = current.packaging_dates.filter((value) => !nextDates.has(value));
+  const currentSlots = new Set(current.rows.filter((row) => row.kind === "slot").map((row) => row.id));
+  const removedSlotIds = [...currentSlots].filter((value) => !nextSlots.has(value));
+  const affected = items.filter((item) =>
+    Boolean(item.packaging_date || item.packaging_slot_id) &&
+    (!nextDates.has(String(item.packaging_date || "")) ||
+      !nextSlots.has(String(item.packaging_slot_id || ""))),
+  );
+  return {
+    affected_count: affected.length,
+    affected_timetable_ids: affected.map((item) => String(item.timetable_id || item.id || "")),
+    removed_dates: removedDates,
+    removed_slot_ids: removedSlotIds,
+  };
+}
+
+export function isExamPackagingDeadlinePassed(config = {}, now = Date.now()) {
+  const deadline = normalizeExamPackagingConfig(config).input_deadline;
+  if (!deadline || !validIsoDateTime(deadline)) return false;
+  const nowValue = now instanceof Date ? now.getTime() : Number(now);
+  return Number.isFinite(nowValue) && nowValue >= Date.parse(deadline);
+}
+
+export function sanitizeSpreadsheetCell(value) {
+  if (typeof value !== "string") return value;
+  return /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
 export function filterAbsences(absences = [], filters = {}) {
   const { startDate, endDate, examDate, period, grade, classId } = filters;
   return absences.filter((item) => {

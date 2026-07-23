@@ -3,19 +3,27 @@ import {
   absenceKey,
   classLabel,
   completionKey,
+  analyzeExamPackagingConfigImpact,
+  buildExamNoticeTitle,
   filterAbsences,
+  isExamPackagingDeadlinePassed,
   makeId,
   isSixDigitPin,
+  normalizeExamPackagingConfig,
   normalizeLoginName,
   seatChartKey,
   sortClasses,
+  sortExamPackagingItems,
   sortStudents,
+  summarizeExamPackaging,
   summarizeAbsences,
+  validateExamPackagingConfig,
 } from "./core.js";
 import { createDemoState } from "./demo-data.js";
 
 const USER_SESSION_KEY = "exam-management:user-session";
 const ADMIN_SESSION_KEY = "exam-management:admin-session";
+const PACKAGING_SESSION_KEY = "exam-management:packaging-session";
 const LEGACY_SCHOOL_SESSION_KEY = "exam-management:school-session";
 const CLIENT_ID_KEY = "exam-management:client-id";
 // Apps Script mutations may wait up to 28 seconds for the spreadsheet lock.
@@ -29,6 +37,8 @@ const SESSION_CODES = new Set([
   "USER_SESSION_EXPIRED",
   "INVALID_SESSION",
   "ADMIN_SESSION_EXPIRED",
+  "PACKAGING_SESSION_EXPIRED",
+  "PACKAGING_LINK_EXPIRED",
 ]);
 const DEMO_ADMIN_ACTIONS = new Set([
   "get_admin_bootstrap",
@@ -46,6 +56,9 @@ const DEMO_ADMIN_ACTIONS = new Set([
   "delete_timetable",
   "save_subject_catalog",
   "save_exam_notice_settings",
+  "save_exam_packaging_config",
+  "create_exam_packaging_invite",
+  "disable_exam_packaging_invite",
   "save_access_user",
   "set_access_user_active",
   "reset_access_user_pin",
@@ -54,6 +67,10 @@ const DEMO_ADMIN_ACTIONS = new Set([
   "save_seat_charts_batch",
   "delete_seat_chart",
   "cleanup",
+]);
+const DEMO_PACKAGING_ACTIONS = new Set([
+  "get_exam_packaging",
+  "save_exam_packaging_items",
 ]);
 
 sessionStorage.removeItem(LEGACY_SCHOOL_SESSION_KEY);
@@ -67,6 +84,12 @@ function getClientId() {
     sessionStorage.setItem(CLIENT_ID_KEY, value);
   }
   return value;
+}
+
+function randomSecretToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 export class ApiError extends Error {
@@ -277,8 +300,17 @@ function publicAccessUser(user = {}) {
 }
 
 export class DemoRepository {
-  constructor() {
+  constructor({ now = () => Date.now() } = {}) {
     this.state = createDemoState();
+    this.now = now;
+    this.packagingInvite = {
+      enabled: true,
+      version: 1,
+      token: "demo-packaging-invite",
+      expires_at: "2099-12-31T23:59:59+09:00",
+      updated_at: "2026-07-15T09:00:00+09:00",
+    };
+    this.packagingSessions = new Map();
     this.accessUsers = [{
       id: "demo-access-user",
       login_name: "테스트교사",
@@ -304,13 +336,116 @@ export class DemoRepository {
     return user ? publicAccessUser(user) : null;
   }
 
+  inviteIsActive() {
+    return Boolean(
+      this.packagingInvite.enabled &&
+      Date.parse(this.packagingInvite.expires_at) > this.now()
+    );
+  }
+
+  currentPackagingSession(payload = {}, { touch = true } = {}) {
+    const token = String(
+      payload.packaging_session || sessionStorage.getItem(PACKAGING_SESSION_KEY) || "",
+    );
+    const session = this.packagingSessions.get(token);
+    if (
+      !token ||
+      !session ||
+      !this.inviteIsActive() ||
+      Number(session.invite_version) !== Number(this.packagingInvite.version) ||
+      this.now() - Number(session.last_seen_at) >= 30 * 60 * 1000
+    ) {
+      if (token) this.packagingSessions.delete(token);
+      return null;
+    }
+    if (touch) session.last_seen_at = this.now();
+    return { token, ...session };
+  }
+
+  packagingItem(item = {}) {
+    return {
+      id: String(item.id || ""),
+      timetable_id: String(item.id || ""),
+      exam_date: String(item.exam_date || ""),
+      grade: Number(item.grade) || 0,
+      period: Number(item.period) || 0,
+      start_time: String(item.start_time || ""),
+      end_time: String(item.end_time || ""),
+      subject_name: String(item.subject_name || ""),
+      subject_type: String(item.subject_type || ""),
+      representative_teacher: String(item.representative_teacher || ""),
+      answer_sheet_type: String(item.answer_sheet_type || ""),
+      packaging_date: String(item.packaging_date || ""),
+      packaging_slot_id: String(item.packaging_slot_id || ""),
+      revision: Number(item.packaging_revision) || 0,
+      updated_at: String(item.packaging_updated_at || ""),
+    };
+  }
+
+  packagingContext({ linkSession = false } = {}) {
+    const config = normalizeExamPackagingConfig(this.state.examPackagingConfig);
+    const activeExamDates = new Set(
+      this.state.examDates
+        .filter((item) => item.active !== false)
+        .map((item) => String(item.exam_date || "")),
+    );
+    const items = sortExamPackagingItems(
+      this.state.timetable
+        .filter((item) => activeExamDates.has(String(item.exam_date || "")))
+        .map((item) => this.packagingItem(item)),
+    );
+    const context = {
+      settings: {
+        school_name: this.state.settings.school_name,
+        app_name: this.state.settings.app_name,
+        timezone: this.state.settings.timezone,
+      },
+      exam_title: buildExamNoticeTitle(this.state.examNotice),
+      exam_dates: structuredClone(
+        this.state.examDates.filter((item) => item.active !== false),
+      ),
+      items,
+      config: structuredClone(config),
+      summary: summarizeExamPackaging(items),
+      read_only: Boolean(linkSession && isExamPackagingDeadlinePassed(config, this.now())),
+    };
+    if (linkSession) context.link_expires_at = this.packagingInvite.expires_at;
+    return context;
+  }
+
+  packagingInviteStatus() {
+    return {
+      active: this.inviteIsActive(),
+      enabled: Boolean(this.packagingInvite.enabled),
+      version: Number(this.packagingInvite.version) || 0,
+      expires_at: String(this.packagingInvite.expires_at || ""),
+      updated_at: String(this.packagingInvite.updated_at || ""),
+    };
+  }
+
   async request(action, payload = {}) {
     await new Promise((resolve) => setTimeout(resolve, 70));
     const state = this.state;
-    if (!["user_login", "admin_entry_login", "logout"].includes(action) && !this.currentUser()) {
-      throw new ApiError("세션이 만료되었습니다. 다시 로그인하세요.", {
-        code: "SESSION_EXPIRED",
-      });
+    const currentUser = this.currentUser();
+    const publicAction = [
+      "user_login",
+      "admin_entry_login",
+      "redeem_exam_packaging_invite",
+      "logout",
+    ].includes(action);
+    const mayUsePackagingSession = DEMO_PACKAGING_ACTIONS.has(action) || action === "presence_ping";
+    const packagingSession = !currentUser && mayUsePackagingSession
+      ? this.currentPackagingSession(payload, {
+          touch: action === "save_exam_packaging_items" || payload.touch === true,
+        })
+      : null;
+    if (!publicAction && !currentUser && !packagingSession) {
+      if (DEMO_PACKAGING_ACTIONS.has(action)) {
+        throw new ApiError("원안 포장 링크 세션이 만료되었습니다. 비밀 링크를 다시 여세요.", {
+          code: "PACKAGING_SESSION_EXPIRED",
+        });
+      }
+      throw new ApiError("세션이 만료되었습니다. 다시 로그인하세요.", { code: "SESSION_EXPIRED" });
     }
     if (DEMO_ADMIN_ACTIONS.has(action)) {
       const currentUser = this.currentUser();
@@ -353,6 +488,25 @@ export class DemoRepository {
           admin_session: "demo-admin-session:system-admin",
           current_user: currentUser,
           bootstrap: this.adminBootstrap(currentUser),
+        };
+      }
+
+      case "redeem_exam_packaging_invite": {
+        const token = String(payload.token || "");
+        if (!this.inviteIsActive() || token !== this.packagingInvite.token) {
+          throw new ApiError("원안 포장 비밀 링크가 올바르지 않거나 종료되었습니다.", {
+            code: "INVALID_PACKAGING_LINK",
+          });
+        }
+        const packagingToken = `demo-packaging-session:${makeId("shared")}`;
+        this.packagingSessions.set(packagingToken, {
+          invite_version: this.packagingInvite.version,
+          created_at: this.now(),
+          last_seen_at: this.now(),
+        });
+        return {
+          packaging_session: packagingToken,
+          context: this.packagingContext({ linkSession: true }),
         };
       }
 
@@ -448,15 +602,156 @@ export class DemoRepository {
         return this.adminBootstrap();
       }
 
-      case "presence_ping":
+      case "presence_ping": {
+        const currentPackagingToken = payload.packaging_session || sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
+        const validPackagingSessions = [...this.packagingSessions.entries()].filter(([, item]) =>
+          this.inviteIsActive() &&
+          Number(item.invite_version) === Number(this.packagingInvite.version) &&
+          this.now() - Number(item.last_seen_at) <= 90 * 1000
+        );
         return {
           connected: true,
-          online_count: 0,
+          online_count: payload.scope === "exam_packaging"
+            ? validPackagingSessions.filter(([token]) => token !== currentPackagingToken).length
+            : 0,
           observed_at: new Date().toISOString(),
           active_window_seconds: 90,
           approximate: true,
           stale: false,
         };
+      }
+
+      case "get_exam_packaging":
+        return this.packagingContext({ linkSession: Boolean(packagingSession && !currentUser) });
+
+      case "save_exam_packaging_items": {
+        const linkSession = Boolean(packagingSession && !currentUser);
+        const config = normalizeExamPackagingConfig(state.examPackagingConfig);
+        if (Number(payload.expected_config_revision) !== Number(config.revision)) {
+          throw new ApiError("원안 포장 설정이 변경되었습니다. 최신 자료를 다시 불러오세요.", {
+            code: "PACKAGING_CONFIG_CONFLICT",
+            details: { current_revision: config.revision },
+          });
+        }
+        if (linkSession && isExamPackagingDeadlinePassed(config, this.now())) {
+          throw new ApiError("입력 마감 이후에는 비밀 링크에서 수정할 수 없습니다.", {
+            code: "PACKAGING_READ_ONLY",
+          });
+        }
+        if (!Array.isArray(payload.items) || payload.items.length > 200) {
+          throw new ApiError("저장할 원안 포장 항목을 확인하세요.", {
+            code: "INVALID_PACKAGING_ITEMS",
+          });
+        }
+
+        const byId = new Map(state.timetable.map((item) => [String(item.id), item]));
+        const activeExamDates = new Set(
+          state.examDates
+            .filter((item) => item.active !== false)
+            .map((item) => String(item.exam_date || "")),
+        );
+        const dates = new Set(config.packaging_dates);
+        const slots = new Map(config.rows.map((row) => [row.id, row]));
+        const pending = new Map();
+        payload.items.forEach((change) => {
+          const id = String(change?.timetable_id || "");
+          if (!id || pending.has(id)) {
+            throw new ApiError("중복되거나 올바르지 않은 시간표 항목이 있습니다.", {
+              code: "INVALID_PACKAGING_ITEMS",
+            });
+          }
+          const existing = byId.get(id);
+          if (!existing || !activeExamDates.has(String(existing.exam_date || ""))) {
+            throw new ApiError("시간표 항목을 찾을 수 없습니다.", {
+              code: "TIMETABLE_NOT_FOUND",
+              details: { timetable_id: id },
+            });
+          }
+          const currentRevision = Number(existing.packaging_revision) || 0;
+          if (Number(change.expected_revision) !== currentRevision) {
+            throw new ApiError("다른 사용자가 원안 포장 항목을 먼저 수정했습니다.", {
+              code: "PACKAGING_REVISION_CONFLICT",
+              details: { timetable_id: id, current_revision: currentRevision },
+            });
+          }
+          const representativeTeacher = String(change.representative_teacher || "").trim();
+          const answerSheetType = String(change.answer_sheet_type || "");
+          const packagingDate = String(change.packaging_date || "");
+          const packagingSlotId = String(change.packaging_slot_id || "");
+          if (representativeTeacher.length > 100) {
+            throw new ApiError("대표교사는 100자 이내로 입력하세요.", {
+              code: "INVALID_REPRESENTATIVE_TEACHER",
+            });
+          }
+          if (!["", "card", "a4"].includes(answerSheetType)) {
+            throw new ApiError("답안지 종류를 확인하세요.", {
+              code: "INVALID_ANSWER_SHEET_TYPE",
+            });
+          }
+          if (Boolean(packagingDate) !== Boolean(packagingSlotId)) {
+            throw new ApiError("포장일과 시간대를 함께 선택하세요.", {
+              code: "INVALID_PACKAGING_ASSIGNMENT",
+            });
+          }
+          if (packagingDate) {
+            const slot = slots.get(packagingSlotId);
+            if (!dates.has(packagingDate) || !slot) {
+              throw new ApiError("선택한 포장일 또는 시간대를 찾을 수 없습니다.", {
+                code: "INVALID_PACKAGING_ASSIGNMENT",
+              });
+            }
+            if (slot.kind === "break") {
+              throw new ApiError("쉬는 시간에는 과목을 배정할 수 없습니다.", {
+                code: "PACKAGING_BREAK_NOT_ASSIGNABLE",
+              });
+            }
+          }
+          pending.set(id, {
+            representative_teacher: representativeTeacher,
+            answer_sheet_type: answerSheetType,
+            packaging_date: packagingDate,
+            packaging_slot_id: packagingSlotId,
+          });
+        });
+
+        const capacityBySlot = new Map();
+        state.timetable.forEach((item) => {
+          if (!activeExamDates.has(String(item.exam_date || ""))) return;
+          const value = pending.get(String(item.id)) || item;
+          if (!value.packaging_date || !value.packaging_slot_id) return;
+          const key = `${value.packaging_date}|${value.packaging_slot_id}`;
+          capacityBySlot.set(key, (capacityBySlot.get(key) || 0) + 1);
+        });
+        const fullEntry = [...capacityBySlot.entries()].find(([, count]) => count > config.capacity);
+        if (fullEntry) {
+          const [key, count] = fullEntry;
+          const [packagingDate, packagingSlotId] = key.split("|");
+          throw new ApiError("선택한 포장 시간대의 정원이 찼습니다.", {
+            code: "PACKAGING_SLOT_FULL",
+            details: {
+              packaging_date: packagingDate,
+              packaging_slot_id: packagingSlotId,
+              capacity: config.capacity,
+              requested_count: count,
+            },
+          });
+        }
+
+        const changedItems = [];
+        const updatedAt = new Date(this.now()).toISOString();
+        pending.forEach((change, id) => {
+          const existing = byId.get(id);
+          Object.assign(existing, change, {
+            packaging_revision: (Number(existing.packaging_revision) || 0) + 1,
+            packaging_updated_at: updatedAt,
+          });
+          changedItems.push(this.packagingItem(existing));
+        });
+        return {
+          ...this.packagingContext({ linkSession }),
+          changed_items: sortExamPackagingItems(changedItems),
+        };
+      }
 
       case "get_absence_context": {
         const students = sortStudents(
@@ -654,8 +949,15 @@ export class DemoRepository {
       }
 
       case "delete_exam_date": {
+        const packagingItems = state.timetable.filter(
+          (item) =>
+            item.exam_date === payload.exam_date &&
+            Boolean(item.representative_teacher || item.answer_sheet_type || item.packaging_date),
+        ).length;
         const impact = {
           timetable: state.timetable.filter((item) => item.exam_date === payload.exam_date).length,
+          packaging_items: packagingItems,
+          packaging_metadata: packagingItems,
           absences: state.absences.filter((item) => item.exam_date === payload.exam_date).length,
           completions: state.completions.filter((item) => item.exam_date === payload.exam_date).length,
           seat_charts: state.seatCharts.filter((item) => item.exam_date === payload.exam_date).length,
@@ -701,17 +1003,25 @@ export class DemoRepository {
             (chart.examinee_ids || []).some((id) => studentIds.has(String(id))) ||
             (chart.assignment || []).some((item) => studentIds.has(String(item.student_id))),
         );
+        const relatedTimetable = state.timetable.filter((item) => {
+          const ids = Array.isArray(item.class_ids)
+            ? item.class_ids
+            : String(item.class_ids || "").split(/[|,]/);
+          return ids.map(String).includes(String(payload.class_id));
+        });
+        const packagingItems = relatedTimetable.filter((item) => {
+          const ids = Array.isArray(item.class_ids)
+            ? item.class_ids
+            : String(item.class_ids || "").split(/[|,]/).filter(Boolean);
+          return ids.length === 1 && Boolean(item.representative_teacher || item.answer_sheet_type || item.packaging_date);
+        }).length;
         const impact = {
           students: studentIds.size,
           absences: state.absences.filter((item) => String(item.class_id) === String(payload.class_id)).length,
           completions: state.completions.filter((item) => String(item.class_id) === String(payload.class_id)).length,
           enrollments: state.enrollments.filter((item) => studentIds.has(String(item.student_id))).length,
-          timetable: state.timetable.filter((item) => {
-            const ids = Array.isArray(item.class_ids)
-              ? item.class_ids
-              : String(item.class_ids || "").split(/[|,]/);
-            return ids.map(String).includes(String(payload.class_id));
-          }).length,
+          timetable: relatedTimetable.length,
+          packaging_items: packagingItems,
           seat_charts: relatedCharts.length,
         };
         if (payload.preview_only) return { deleted: false, preview: true, impact };
@@ -847,7 +1157,19 @@ export class DemoRepository {
             code: "TIMETABLE_DELETE_ACTION_REQUIRED",
           });
         }
-        state.timetable = payload.timetable;
+        const currentById = new Map(state.timetable.map((item) => [String(item.id), item]));
+        state.timetable = payload.timetable.map((item) => {
+          const existing = currentById.get(String(item.id));
+          return {
+            ...item,
+            representative_teacher: String(existing?.representative_teacher || ""),
+            answer_sheet_type: String(existing?.answer_sheet_type || ""),
+            packaging_date: String(existing?.packaging_date || ""),
+            packaging_slot_id: String(existing?.packaging_slot_id || ""),
+            packaging_revision: Number(existing?.packaging_revision) || 0,
+            packaging_updated_at: String(existing?.packaging_updated_at || ""),
+          };
+        });
         return this.adminBootstrap();
       }
 
@@ -867,6 +1189,97 @@ export class DemoRepository {
         state.examNotice = normalizeDemoExamNotice(payload.notice);
         return this.adminBootstrap();
 
+      case "save_exam_packaging_config": {
+        const currentConfig = normalizeExamPackagingConfig(state.examPackagingConfig);
+        if (Number(payload.expected_revision) !== Number(currentConfig.revision)) {
+          throw new ApiError("원안 포장 설정이 변경되었습니다. 최신 자료를 다시 불러오세요.", {
+            code: "PACKAGING_CONFIG_CONFLICT",
+            details: { current_revision: currentConfig.revision },
+          });
+        }
+        const validation = validateExamPackagingConfig({
+          ...(payload.config || {}),
+          revision: currentConfig.revision,
+        });
+        if (!validation.ok) {
+          throw new ApiError("원안 포장 설정을 확인하세요.", {
+            code: validation.errors[0]?.code || "INVALID_PACKAGING_CONFIG",
+            details: { errors: validation.errors },
+          });
+        }
+        const packagingItems = state.timetable.map((item) => this.packagingItem(item));
+        const impact = analyzeExamPackagingConfigImpact(
+          currentConfig,
+          validation.config,
+          packagingItems,
+        );
+        if (payload.preview_only) {
+          return { preview: true, impact, context: this.packagingContext() };
+        }
+        if (impact.affected_count && payload.force !== true) {
+          throw new ApiError("사용 중인 포장일 또는 시간대가 있습니다.", {
+            code: "PACKAGING_CONFIG_IN_USE",
+            details: impact,
+          });
+        }
+        if (impact.affected_count) {
+          const affectedIds = new Set(impact.affected_timetable_ids);
+          const updatedAt = new Date(this.now()).toISOString();
+          state.timetable.forEach((item) => {
+            if (!affectedIds.has(String(item.id))) return;
+            item.packaging_date = "";
+            item.packaging_slot_id = "";
+            item.packaging_revision = (Number(item.packaging_revision) || 0) + 1;
+            item.packaging_updated_at = updatedAt;
+          });
+        }
+        state.examPackagingConfig = {
+          ...validation.config,
+          revision: currentConfig.revision + 1,
+        };
+        return {
+          saved: true,
+          impact,
+          exam_packaging_config: structuredClone(state.examPackagingConfig),
+          context: this.packagingContext(),
+        };
+      }
+
+      case "create_exam_packaging_invite": {
+        const expiresAt = String(payload.expires_at || "").trim();
+        if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= this.now()) {
+          throw new ApiError("비밀 링크 종료일시를 확인하세요.", {
+            code: "INVALID_PACKAGING_INVITE_EXPIRY",
+          });
+        }
+        const token = randomSecretToken();
+        this.packagingInvite = {
+          enabled: true,
+          version: Number(this.packagingInvite.version || 0) + 1,
+          token,
+          expires_at: expiresAt,
+          updated_at: new Date(this.now()).toISOString(),
+        };
+        this.packagingSessions.clear();
+        return {
+          token,
+          fragment: `#packaging=${encodeURIComponent(token)}`,
+          expires_at: expiresAt,
+          invite_status: this.packagingInviteStatus(),
+        };
+      }
+
+      case "disable_exam_packaging_invite":
+        this.packagingInvite = {
+          ...this.packagingInvite,
+          enabled: false,
+          version: Number(this.packagingInvite.version || 0) + 1,
+          token: "",
+          updated_at: new Date(this.now()).toISOString(),
+        };
+        this.packagingSessions.clear();
+        return { disabled: true, invite_status: this.packagingInviteStatus() };
+
       case "delete_timetable": {
         const target = state.timetable.find((item) => String(item.id) === String(payload.id));
         if (!target) {
@@ -879,7 +1292,11 @@ export class DemoRepository {
           item.subject_type === "elective"
         );
         const removeEnrollments = target.subject_type === "elective" && remainingSubjectRows.length === 0;
+        const packagingItems = target.representative_teacher || target.answer_sheet_type || target.packaging_date ? 1 : 0;
         const impact = {
+          packaging_assignments: target.packaging_date && target.packaging_slot_id ? 1 : 0,
+          packaging_items: packagingItems,
+          packaging_metadata: packagingItems,
           enrollments: removeEnrollments
             ? state.enrollments.filter((item) =>
                 Number(item.grade) === Number(target.grade) &&
@@ -1078,6 +1495,8 @@ export class DemoRepository {
       timetable: structuredClone(this.state.timetable),
       subject_catalog: structuredClone(this.state.subjectCatalog),
       exam_notice: structuredClone(this.state.examNotice),
+      exam_packaging_config: structuredClone(this.state.examPackagingConfig),
+      exam_packaging_invite_status: this.packagingInviteStatus(),
       enrollments: structuredClone(this.state.enrollments),
       seat_charts: structuredClone(this.state.seatCharts),
       access_users: this.accessUsers.map(publicAccessUser),
@@ -1101,6 +1520,7 @@ class AppsScriptRepository {
       ...payload,
       user_session: sessionStorage.getItem(USER_SESSION_KEY) || "",
       admin_session: sessionStorage.getItem(ADMIN_SESSION_KEY) || "",
+      packaging_session: sessionStorage.getItem(PACKAGING_SESSION_KEY) || "",
       client_id: getClientId(),
       request_id: payload.request_id || crypto.randomUUID?.() || makeId("request"),
     };
@@ -1178,6 +1598,15 @@ export function saveAdminSession(value) {
   else sessionStorage.removeItem(ADMIN_SESSION_KEY);
 }
 
+export function savePackagingSession(value) {
+  if (value) sessionStorage.setItem(PACKAGING_SESSION_KEY, value);
+  else sessionStorage.removeItem(PACKAGING_SESSION_KEY);
+}
+
+export function getPackagingSession() {
+  return sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
+}
+
 export function hasUserSession() {
   return Boolean(sessionStorage.getItem(USER_SESSION_KEY));
 }
@@ -1186,15 +1615,33 @@ export function hasAdminSession() {
   return Boolean(sessionStorage.getItem(ADMIN_SESSION_KEY));
 }
 
+export function hasPackagingSession() {
+  return Boolean(sessionStorage.getItem(PACKAGING_SESSION_KEY));
+}
+
+export function clearPackagingSession() {
+  sessionStorage.removeItem(PACKAGING_SESSION_KEY);
+}
+
 export function clearSessions() {
   sessionStorage.removeItem(USER_SESSION_KEY);
   sessionStorage.removeItem(ADMIN_SESSION_KEY);
   sessionStorage.removeItem(LEGACY_SCHOOL_SESSION_KEY);
+  sessionStorage.removeItem(PACKAGING_SESSION_KEY);
 }
 
-export function sessionErrorBelongsToCurrentSession(code, userSession, adminSession) {
+export function sessionErrorBelongsToCurrentSession(
+  code,
+  userSession,
+  adminSession,
+  packagingSession = "",
+) {
   if (code === "ADMIN_SESSION_EXPIRED") {
     return Boolean(adminSession) && sessionStorage.getItem(ADMIN_SESSION_KEY) === adminSession;
+  }
+  if (["PACKAGING_SESSION_EXPIRED", "PACKAGING_LINK_EXPIRED"].includes(code)) {
+    return Boolean(packagingSession) &&
+      sessionStorage.getItem(PACKAGING_SESSION_KEY) === packagingSession;
   }
   return Boolean(userSession) && sessionStorage.getItem(USER_SESSION_KEY) === userSession;
 }
@@ -1202,15 +1649,23 @@ export function sessionErrorBelongsToCurrentSession(code, userSession, adminSess
 export async function apiRequest(action, payload) {
   const requestUserSession = sessionStorage.getItem(USER_SESSION_KEY) || "";
   const requestAdminSession = sessionStorage.getItem(ADMIN_SESSION_KEY) || "";
+  const requestPackagingSession = sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
   try {
     return await repository.request(action, payload);
   } catch (error) {
     if (
       SESSION_CODES.has(error?.code) &&
-      sessionErrorBelongsToCurrentSession(error.code, requestUserSession, requestAdminSession)
+      sessionErrorBelongsToCurrentSession(
+        error.code,
+        requestUserSession,
+        requestAdminSession,
+        requestPackagingSession,
+      )
     ) {
       if (error.code === "ADMIN_SESSION_EXPIRED") {
         sessionStorage.removeItem(ADMIN_SESSION_KEY);
+      } else if (["PACKAGING_SESSION_EXPIRED", "PACKAGING_LINK_EXPIRED"].includes(error.code)) {
+        clearPackagingSession();
       } else {
         clearSessions();
       }

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   aggregateAbsenceReport,
+  analyzeExamPackagingConfigImpact,
   analyzeEnrollmentRows,
   analyzeManualSeatRows,
   analyzeStudentRows,
@@ -9,6 +10,7 @@ import {
   absenceKey,
   buildExamNoticeSchedule,
   buildExamNoticeTitle,
+  groupExamPackagingSchedule,
   buildPersonalTimetable,
   buildSeatSlots,
   createIdleLogoutTimer,
@@ -18,13 +20,19 @@ import {
   formatPresenceLabel,
   generateSeatAssignment,
   isSixDigitPin,
+  isExamPackagingDeadlinePassed,
+  normalizeExamPackagingConfig,
   normalizeLoginName,
   normalizeEnrollmentRows,
   normalizeManualSeatRows,
   normalizeStudentRows,
   resolveStudentRoom,
+  sanitizeSpreadsheetCell,
   seatChartKey,
+  sortExamPackagingItems,
   summarizeAbsences,
+  summarizeExamPackaging,
+  validateExamPackagingConfig,
 } from "../src/core.js";
 
 test("미사용 타이머는 5분 뒤 로그아웃하고 활동 때마다 다시 시작한다", () => {
@@ -436,4 +444,115 @@ test("25개 동시 재시도 요청은 같은 request_id에서 한 번만 커밋
   const results = await Promise.all(Array.from({ length: 25 }, () => mutate("same-request")));
   assert.equal(writes, 1);
   assert.ok(results.every((item) => item.saved));
+});
+
+test("원안 포장 설정은 포장일·시간행·담당자를 정규화하고 중복을 검증한다", () => {
+  const valid = validateExamPackagingConfig({
+    revision: 2,
+    input_deadline: "2026-07-30T17:00:00+09:00",
+    capacity: 3,
+    packaging_dates: ["2026-07-28"],
+    rows: [
+      { id: "slot-2", kind: "slot", period_label: "2회", start_time: "13:35", end_time: "14:00", sort_order: 3 },
+      { id: "break-1", kind: "break", period_label: "쉬는 시간", start_time: "13:25", end_time: "13:35", sort_order: 2 },
+      { id: "slot-1", kind: "slot", period_label: "1회", start_time: "13:00", end_time: "13:25", sort_order: 1 },
+    ],
+    staff_assignments: [
+      { packaging_date: "2026-07-28", slot_id: "slot-1", staff_name: "담당 가" },
+      { packaging_date: "2026-07-28", slot_id: "break-1", staff_name: "휴식 담당" },
+    ],
+  });
+  assert.equal(valid.ok, true);
+  assert.equal(valid.config.capacity, 3);
+  assert.equal(valid.config.staff_assignments[1].slot_id, "break-1");
+
+  const invalid = validateExamPackagingConfig({
+    input_deadline: "잘못된 날짜",
+    capacity: 0,
+    packaging_dates: ["2026-07-28", "2026-07-28"],
+    rows: [
+      { id: "same", kind: "slot", period_label: "1회", start_time: "13:00", end_time: "13:25" },
+      { id: "same", kind: "break", period_label: "쉬는 시간", start_time: "13:00", end_time: "13:25" },
+      { id: "long-slot", kind: "slot", period_label: "겹침", start_time: "13:20", end_time: "13:50" },
+    ],
+    staff_assignments: [
+      { packaging_date: "2026-07-28", slot_id: "same", staff_name: "담당 가" },
+      { packaging_date: "2026-07-28", slot_id: "same", staff_name: "담당 나" },
+    ],
+  });
+  assert.equal(invalid.ok, false);
+  const codes = new Set(invalid.errors.map((item) => item.code));
+  assert.ok(codes.has("INVALID_PACKAGING_DEADLINE"));
+  assert.ok(codes.has("INVALID_PACKAGING_CAPACITY"));
+  assert.ok(codes.has("DUPLICATE_PACKAGING_DATE"));
+  assert.ok(codes.has("DUPLICATE_PACKAGING_ROW_ID"));
+  assert.ok(codes.has("DUPLICATE_PACKAGING_TIME"));
+  assert.ok(codes.has("INVALID_PACKAGING_SLOT_DURATION"));
+  assert.ok(codes.has("OVERLAPPING_PACKAGING_TIME"));
+  assert.ok(codes.has("DUPLICATE_PACKAGING_STAFF_ASSIGNMENT"));
+});
+
+test("원안 포장 항목은 시험일·교시·학년순으로 정렬하고 슬롯별로 묶는다", () => {
+  const items = [
+    { timetable_id: "b", exam_date: "2026-07-21", period: 1, grade: 1, subject_name: "수학", answer_sheet_type: "", packaging_date: "", packaging_slot_id: "", representative_teacher: "" },
+    { timetable_id: "c", exam_date: "2026-07-20", period: 1, grade: 2, subject_name: "영어", answer_sheet_type: "a4", packaging_date: "2026-07-18", packaging_slot_id: "slot-1", representative_teacher: "담당 나" },
+    { timetable_id: "a", exam_date: "2026-07-20", period: 1, grade: 1, subject_name: "국어", answer_sheet_type: "card", packaging_date: "2026-07-18", packaging_slot_id: "slot-1", representative_teacher: "담당 가" },
+  ];
+  assert.deepEqual(sortExamPackagingItems(items).map((item) => item.timetable_id), ["a", "c", "b"]);
+  assert.deepEqual(summarizeExamPackaging(items), {
+    total: 3,
+    assigned: 2,
+    unassigned: 1,
+    answer_selected: 2,
+    answer_unselected: 1,
+    card: 1,
+    a4: 1,
+    representative_missing: 1,
+  });
+  const grouped = groupExamPackagingSchedule(items, {
+    capacity: 3,
+    packaging_dates: ["2026-07-18"],
+    rows: [
+      { id: "break-1", kind: "break", period_label: "휴식", start_time: "13:25", end_time: "13:35", sort_order: 2 },
+      { id: "slot-1", kind: "slot", period_label: "1회", start_time: "13:00", end_time: "13:25", sort_order: 1 },
+    ],
+    staff_assignments: [
+      { packaging_date: "2026-07-18", slot_id: "slot-1", staff_name: "교무 가" },
+    ],
+  });
+  assert.equal(grouped.dates[0].rows[0].items.length, 2);
+  assert.equal(grouped.dates[0].rows[0].staff_name, "교무 가");
+  assert.deepEqual(grouped.dates[0].rows[1].items, []);
+  assert.deepEqual(grouped.unassigned.map((item) => item.timetable_id), ["b"]);
+});
+
+test("원안 포장 설정에서 사용 중인 날짜나 슬롯을 없애면 영향 항목을 계산한다", () => {
+  const current = normalizeExamPackagingConfig({
+    capacity: 3,
+    packaging_dates: ["2026-07-18", "2026-07-19"],
+    rows: [
+      { id: "slot-1", kind: "slot", period_label: "1회", start_time: "13:00", end_time: "13:25" },
+      { id: "slot-2", kind: "slot", period_label: "2회", start_time: "13:35", end_time: "14:00" },
+    ],
+  });
+  const next = { ...current, packaging_dates: ["2026-07-18"], rows: [current.rows[0]] };
+  const impact = analyzeExamPackagingConfigImpact(current, next, [
+    { timetable_id: "a", packaging_date: "2026-07-18", packaging_slot_id: "slot-1" },
+    { timetable_id: "b", packaging_date: "2026-07-19", packaging_slot_id: "slot-1" },
+    { timetable_id: "c", packaging_date: "2026-07-18", packaging_slot_id: "slot-2" },
+  ]);
+  assert.equal(impact.affected_count, 2);
+  assert.deepEqual(impact.affected_timetable_ids, ["b", "c"]);
+  assert.deepEqual(impact.removed_dates, ["2026-07-19"]);
+  assert.deepEqual(impact.removed_slot_ids, ["slot-2"]);
+});
+
+test("비밀 링크 마감 판정은 지정 시각을 포함하고 Excel 수식 시작값을 무력화한다", () => {
+  const config = { input_deadline: "2026-07-23T17:00:00+09:00" };
+  assert.equal(isExamPackagingDeadlinePassed(config, Date.parse("2026-07-23T16:59:59+09:00")), false);
+  assert.equal(isExamPackagingDeadlinePassed(config, Date.parse("2026-07-23T17:00:00+09:00")), true);
+  assert.equal(sanitizeSpreadsheetCell("=HYPERLINK(\"https://example.invalid\")"), "'=HYPERLINK(\"https://example.invalid\")");
+  assert.equal(sanitizeSpreadsheetCell("  +1+1"), "'  +1+1");
+  assert.equal(sanitizeSpreadsheetCell("국어"), "국어");
+  assert.equal(sanitizeSpreadsheetCell(123), 123);
 });

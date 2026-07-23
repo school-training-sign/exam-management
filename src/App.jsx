@@ -14,9 +14,11 @@ import IconFileText from "@tabler/icons-react/dist/esm/icons/IconFileText.mjs";
 import IconFileSpreadsheet from "@tabler/icons-react/dist/esm/icons/IconFileSpreadsheet.mjs";
 import IconLayoutGrid from "@tabler/icons-react/dist/esm/icons/IconLayoutGrid.mjs";
 import IconListCheck from "@tabler/icons-react/dist/esm/icons/IconListCheck.mjs";
+import IconLink from "@tabler/icons-react/dist/esm/icons/IconLink.mjs";
 import IconLock from "@tabler/icons-react/dist/esm/icons/IconLock.mjs";
 import IconLogout from "@tabler/icons-react/dist/esm/icons/IconLogout.mjs";
 import IconPlus from "@tabler/icons-react/dist/esm/icons/IconPlus.mjs";
+import IconPackage from "@tabler/icons-react/dist/esm/icons/IconPackage.mjs";
 import IconPrinter from "@tabler/icons-react/dist/esm/icons/IconPrinter.mjs";
 import IconRefresh from "@tabler/icons-react/dist/esm/icons/IconRefresh.mjs";
 import IconSettings from "@tabler/icons-react/dist/esm/icons/IconSettings.mjs";
@@ -47,6 +49,7 @@ import {
   makeId,
   normalizeLoginName,
   resolveStudentRoom,
+  sanitizeSpreadsheetCell,
   seatChartKey,
   sortStudents,
   summarizeAbsences,
@@ -55,9 +58,13 @@ import {
 import {
   apiRequest,
   clearSessions,
+  clearPackagingSession,
+  getPackagingSession,
   hasAdminSession,
+  hasPackagingSession,
   hasUserSession,
   saveAdminSession,
+  savePackagingSession,
   saveUserSession,
 } from "./api.js";
 
@@ -72,6 +79,8 @@ const EMPTY_BOOTSTRAP = {
   seat_charts: [],
   subject_catalog: {},
   exam_notice: {},
+  exam_packaging_config: {},
+  exam_packaging_invite_status: {},
   access_users: [],
   current_user: null,
 };
@@ -181,6 +190,65 @@ function timetableClassScope(item, classes = []) {
     .filter((row) => selected.has(String(row.id)))
     .map((row) => `${Number(row.class_num)}반`)
     .join(", ") || "미지정";
+}
+
+const ANSWER_SHEET_OPTIONS = [
+  ["", "미선택"],
+  ["card", "작은 답안지(카드)"],
+  ["a4", "큰 답안지(A4)"],
+];
+
+function answerSheetLabel(value) {
+  return ANSWER_SHEET_OPTIONS.find(([id]) => id === String(value || ""))?.[1] || "미선택";
+}
+
+function extractPackagingInviteToken() {
+  const raw = String(window.location.hash || "").replace(/^#/, "");
+  if (!raw) return "";
+  const params = new URLSearchParams(raw);
+  if (params.get("packaging")) return params.get("packaging");
+  const matched = /^packaging\/(.+)$/.exec(raw);
+  return matched ? decodeURIComponent(matched[1]) : "";
+}
+
+function stripPackagingInviteToken() {
+  if (!window.location.hash) return;
+  const url = new URL(window.location.href);
+  url.hash = "";
+  url.searchParams.set("packaging", "1");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+}
+
+function packagingDateValue(item) {
+  return typeof item === "string" ? item : String(item?.date || item?.packaging_date || "");
+}
+
+function packagingStaff(config, date, slotId) {
+  const assignments = Array.isArray(config?.staff_assignments) ? config.staff_assignments : [];
+  return assignments.find((item) => (
+    packagingDateValue(item) === date && String(item.slot_id || "") === String(slotId)
+  ))?.staff_name || "";
+}
+
+function packagingAssignmentValue(item) {
+  return item?.packaging_date && item?.packaging_slot_id
+    ? `${item.packaging_date}|${item.packaging_slot_id}`
+    : "";
+}
+
+function printableCell(value) {
+  return sanitizeSpreadsheetCell(String(value ?? ""));
+}
+
+function printPackaging(target) {
+  document.documentElement.dataset.packagingPrint = target;
+  const clear = () => {
+    delete document.documentElement.dataset.packagingPrint;
+    window.removeEventListener("afterprint", clear);
+  };
+  window.addEventListener("afterprint", clear);
+  window.print();
+  window.setTimeout(clear, 1000);
 }
 
 function IndeterminateCheckbox({ indeterminate = false, ...props }) {
@@ -1503,6 +1571,433 @@ function SeatPanel({ bootstrap, onBootstrap }) {
   );
 }
 
+function PackagingItemFields({ item, patchItem, assignmentOptions, slotCounts, capacity, readOnly, suggestedTeacher, compact = false }) {
+  const assignmentValue = packagingAssignmentValue(item);
+  return (
+    <div className={`packaging-item-fields ${compact ? "compact" : ""}`}>
+      <label>
+        <span>대표교사</span>
+        <span className="packaging-teacher-input">
+          <input
+            value={item.representative_teacher || ""}
+            onChange={(event) => patchItem(item.timetable_id || item.id, { representative_teacher: event.target.value })}
+            placeholder={suggestedTeacher ? `추천: ${suggestedTeacher}` : "이름 입력"}
+            maxLength="50"
+            disabled={readOnly}
+          />
+          {!readOnly && suggestedTeacher && !item.representative_teacher ? (
+            <button type="button" className="text-button" onClick={() => patchItem(item.timetable_id || item.id, { representative_teacher: suggestedTeacher })}>내 이름</button>
+          ) : null}
+        </span>
+      </label>
+      <label>
+        <span>답안지</span>
+        <select value={item.answer_sheet_type || ""} onChange={(event) => patchItem(item.timetable_id || item.id, { answer_sheet_type: event.target.value })} disabled={readOnly}>
+          {ANSWER_SHEET_OPTIONS.map(([value, label]) => <option value={value} key={value || "none"}>{label}</option>)}
+        </select>
+      </label>
+      {!compact ? (
+        <label>
+          <span>포장 배정</span>
+          <select
+            value={assignmentValue}
+            onChange={(event) => {
+              const [packaging_date = "", packaging_slot_id = ""] = event.target.value.split("|");
+              patchItem(item.timetable_id || item.id, { packaging_date, packaging_slot_id });
+            }}
+            disabled={readOnly}
+          >
+            <option value="">미배정</option>
+            {assignmentOptions.map((option) => {
+              const full = Number(slotCounts[option.value] || 0) >= capacity && assignmentValue !== option.value;
+              return <option value={option.value} disabled={full} key={option.value}>{option.label}{full ? " · 마감" : ""}</option>;
+            })}
+          </select>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function PackagingPanel({ initialContext = null, shareMode = false, currentUser = null, presence = null, onContextChange = null }) {
+  const [view, setView] = useState("schedule");
+  const [context, setContext] = useState(initialContext);
+  const [drafts, setDrafts] = useState({});
+  const [dirtyIds, setDirtyIds] = useState(() => new Set());
+  const [loading, setLoading] = useState(!initialContext);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const applyContext = useCallback((value, preserveDirty = false) => {
+    setContext(value);
+    onContextChange?.(value);
+    if (!preserveDirty) {
+      setDrafts(Object.fromEntries((value?.items || []).map((item) => [
+        String(item.timetable_id || item.id),
+        { ...item },
+      ])));
+      setDirtyIds(new Set());
+    }
+  }, [onContextChange]);
+
+  const refresh = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      const result = await apiRequest("get_exam_packaging", {});
+      if (!(silent && dirtyIds.size > 0)) applyContext(result);
+      if (!silent) setError("");
+    } catch (nextError) {
+      if (!silent || nextError?.code === "PACKAGING_SESSION_EXPIRED") setError(messageFrom(nextError));
+      if (shareMode && ["PACKAGING_SESSION_EXPIRED", "INVALID_PACKAGING_LINK"].includes(nextError?.code)) {
+        clearPackagingSession();
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [applyContext, dirtyIds.size, shareMode]);
+
+  useEffect(() => {
+    if (initialContext) applyContext(initialContext);
+    else refresh();
+  }, []);
+
+  useEffect(() => {
+    let timer;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (document.visibilityState === "visible") timer = setTimeout(tick, 30_000);
+    };
+    const tick = async () => {
+      await refresh({ silent: true });
+      schedule();
+    };
+    const visibility = () => document.visibilityState === "visible" ? tick() : clearTimeout(timer);
+    schedule();
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [refresh]);
+
+  const config = context?.config || {};
+  const capacity = Math.max(1, Number(config.capacity || config.slot_capacity || 3));
+  const packagingDates = (config.packaging_dates || []).map(packagingDateValue).filter(Boolean).sort();
+  const slotRows = (config.rows || config.time_rows || [])
+    .slice()
+    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+  const editableSlots = slotRows.filter((row) => row.kind !== "break");
+  const items = (context?.items || []).map((item) => ({
+    ...item,
+    ...(drafts[String(item.timetable_id || item.id)] || {}),
+  }));
+  const assignmentOptions = packagingDates.flatMap((date) => editableSlots.map((slot) => ({
+    value: `${date}|${slot.id}`,
+    label: `${formatKoreanDate(date)} · ${slot.period_label || `${slot.start_time}~${slot.end_time}`}`,
+  })));
+  const slotCounts = items.reduce((counts, item) => {
+    const key = packagingAssignmentValue(item);
+    if (key) counts[key] = Number(counts[key] || 0) + 1;
+    return counts;
+  }, {});
+  const summary = context?.summary || {
+    total: items.length,
+    assigned: items.filter((item) => packagingAssignmentValue(item)).length,
+    missing_answer_sheet: items.filter((item) => !item.answer_sheet_type).length,
+    missing_representative_teacher: items.filter((item) => !String(item.representative_teacher || "").trim()).length,
+  };
+  const readOnly = Boolean(context?.read_only);
+  const suggestedTeacher = shareMode ? "" : String(currentUser?.login_name || "");
+
+  function patchItem(id, patch) {
+    if (readOnly) return;
+    const key = String(id);
+    setDrafts((current) => ({ ...current, [key]: { ...(current[key] || {}), ...patch } }));
+    setDirtyIds((current) => new Set([...current, key]));
+    setMessage("");
+    setError("");
+  }
+
+  async function saveItems() {
+    if (!dirtyIds.size || readOnly) return;
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const changed = [...dirtyIds].map((id) => {
+        const original = (context?.items || []).find((item) => String(item.timetable_id || item.id) === String(id)) || {};
+        const item = { ...original, ...(drafts[id] || {}) };
+        return {
+          timetable_id: item.timetable_id || item.id,
+          expected_revision: Number(item.packaging_revision ?? item.revision ?? 0),
+          representative_teacher: String(item.representative_teacher || "").trim(),
+          answer_sheet_type: String(item.answer_sheet_type || ""),
+          packaging_date: String(item.packaging_date || ""),
+          packaging_slot_id: String(item.packaging_slot_id || ""),
+        };
+      });
+      await apiRequest("save_exam_packaging_items", {
+        expected_config_revision: Number(config.revision || 0),
+        items: changed,
+      });
+      setMessage(`${changed.length}개 과목의 원안 포장 정보를 저장했습니다.`);
+      await refresh();
+    } catch (nextError) {
+      if (["PACKAGING_REVISION_CONFLICT", "PACKAGING_CONFIG_CONFLICT"].includes(nextError?.code)) {
+        setError("다른 사용자가 먼저 수정했습니다. 최신 내용을 불러왔으니 변경 내용을 다시 확인하세요.");
+        await refresh();
+      } else {
+        setError(messageFrom(nextError));
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function assignToSlot(itemId, date, slotId) {
+    patchItem(itemId, { packaging_date: date, packaging_slot_id: slotId });
+  }
+
+  function exportPackagingWorkbook() {
+    const scheduleSheet = [["포장일", "시간대", "시간", "학년", "과목", "대표교사", "교무 담당자", "답안지"]];
+    packagingDates.forEach((date) => slotRows.forEach((slot) => {
+      const assigned = items.filter((item) => item.packaging_date === date && String(item.packaging_slot_id) === String(slot.id));
+      if (slot.kind === "break" || !assigned.length) {
+        scheduleSheet.push([date, slot.period_label || "", `${slot.start_time || ""}~${slot.end_time || ""}`, "", slot.kind === "break" ? (slot.note || "쉬는 시간") : "", "", packagingStaff(config, date, slot.id), ""]);
+      } else {
+        assigned.forEach((item) => scheduleSheet.push([
+          date, slot.period_label || "", `${slot.start_time || ""}~${slot.end_time || ""}`, item.grade,
+          item.subject_name, item.representative_teacher || "", packagingStaff(config, date, slot.id), answerSheetLabel(item.answer_sheet_type),
+        ]));
+      }
+    }));
+    const examSheet = [["고사일", "교시", "시간", "학년", "과목", "대표교사", "답안지", "포장 배정"]];
+    items.slice().sort((a, b) => String(a.exam_date).localeCompare(String(b.exam_date)) || Number(a.period) - Number(b.period) || Number(a.grade) - Number(b.grade) || String(a.subject_name).localeCompare(String(b.subject_name), "ko"))
+      .forEach((item) => examSheet.push([
+        item.exam_date, item.period, `${item.start_time || ""}~${item.end_time || ""}`, item.grade, item.subject_name,
+        item.representative_teacher || "", answerSheetLabel(item.answer_sheet_type),
+        packagingAssignmentValue(item) ? "포장 배정 완료" : "미배정",
+      ]));
+    downloadWorkbook(`${context?.exam_title || "고사"} 원안 포장`, {
+      "포장 일정": scheduleSheet.map((row) => row.map(printableCell)),
+      "고사 일정·답안지": examSheet.map((row) => row.map(printableCell)),
+    });
+  }
+
+  const examGroups = [...items.reduce((map, item) => {
+    const key = `${item.exam_date}|${item.period}|${item.start_time || ""}|${item.end_time || ""}`;
+    if (!map.has(key)) map.set(key, {
+      key,
+      exam_date: item.exam_date,
+      period: Number(item.period),
+      time: `${item.start_time || ""}~${item.end_time || ""}`,
+      grades: { 1: [], 2: [], 3: [] },
+    });
+    if (!map.get(key).grades[item.grade]) map.get(key).grades[item.grade] = [];
+    map.get(key).grades[item.grade].push(item);
+    return map;
+  }, new Map()).values()].sort((a, b) => String(a.exam_date).localeCompare(String(b.exam_date)) || a.period - b.period);
+  const unassignedItems = items.filter((item) => !packagingAssignmentValue(item));
+
+  if (loading && !context) return <section className="page-section"><EmptyState icon={IconPackage} title="원안 포장 정보를 불러오는 중입니다" description="학교 소유 시트와 안전하게 연결하고 있습니다." /></section>;
+  if (!context) return <section className="page-section"><Notice tone="error">{error || "원안 포장 정보를 불러오지 못했습니다."}</Notice><button className="button button-light" onClick={() => refresh()}><IconRefresh size={17} /> 다시 불러오기</button></section>;
+
+  return (
+    <section className={`page-section packaging-page ${shareMode ? "packaging-share-page" : ""}`}>
+      {!shareMode ? <SectionHeader title="고사 원안 포장" description="시간표의 과목별 답안지와 포장 시간을 함께 배정합니다." actions={<><button className="button button-light" onClick={() => refresh()}><IconRefresh size={17} /> 새로고침</button><button className="button button-light" onClick={exportPackagingWorkbook}><IconFileSpreadsheet size={17} /> Excel</button></>} /> : null}
+      <Notice>{message}</Notice><Notice tone="error">{error}</Notice>
+      <div className="packaging-overview no-print">
+        <div><span>전체 과목</span><strong>{Number(summary.total ?? items.length)}<small>개</small></strong></div>
+        <div><span>포장 배정</span><strong>{Number(summary.assigned ?? items.filter((item) => packagingAssignmentValue(item)).length)}<small>개</small></strong></div>
+        <div><span>답안지 미선택</span><strong>{Number(summary.missing_answer_sheet ?? items.filter((item) => !item.answer_sheet_type).length)}<small>개</small></strong></div>
+        <div><span>대표교사 미입력</span><strong>{Number(summary.missing_representative_teacher ?? items.filter((item) => !item.representative_teacher).length)}<small>개</small></strong></div>
+      </div>
+      {readOnly ? <div className="packaging-deadline-notice"><IconLock size={18} /><span>입력 마감이 지나 비밀 링크는 읽기 전용입니다.</span></div> : null}
+      <div className="packaging-subtabs no-print" role="tablist" aria-label="원안 포장 보기">
+        <button role="tab" aria-selected={view === "schedule"} className={view === "schedule" ? "active" : ""} onClick={() => setView("schedule")}><IconPackage size={18} /> 포장 일정</button>
+        <button role="tab" aria-selected={view === "exam"} className={view === "exam" ? "active" : ""} onClick={() => setView("exam")}><IconCalendar size={18} /> 고사 일정·답안지</button>
+      </div>
+
+      {view === "schedule" ? (
+        <article className="panel-card packaging-print packaging-print-schedule print-section">
+          <div className="card-heading no-print"><div><IconPackage size={20} /><h3>포장 일정</h3></div><button className="button button-light" onClick={() => printPackaging("schedule")}><IconPrinter size={17} /> A4 가로 인쇄</button></div>
+          <div className="print-heading"><h3>{context.exam_title || "고사"} 원안 포장 일정</h3><p>시간대별 정원 {capacity}과목</p></div>
+          {!packagingDates.length || !slotRows.length ? <EmptyState icon={IconCalendar} title="포장 일정이 설정되지 않았습니다" description="관리자 설정에서 포장일과 25분 시간대를 먼저 등록하세요." /> : (
+            <>
+              <div className="table-wrap packaging-table-desktop">
+                <table className="packaging-schedule-table"><thead><tr><th>포장일</th><th>시간대</th><th>시간</th><th>배정 과목</th><th>교무 담당자</th></tr></thead><tbody>
+                  {packagingDates.flatMap((date) => slotRows.map((slot) => {
+                    const key = `${date}|${slot.id}`;
+                    const assigned = items.filter((item) => packagingAssignmentValue(item) === key);
+                    return <tr key={key} className={slot.kind === "break" ? "packaging-break-row" : ""}><td>{formatKoreanDate(date)}</td><td>{slot.period_label || (slot.kind === "break" ? "쉬는 시간" : "")}</td><td>{slot.start_time}~{slot.end_time}</td><td>{slot.kind === "break" ? <span>{slot.note || "쉬는 시간"}</span> : <div className="packaging-slot-items">{assigned.map((item) => <div className="packaging-assigned-item" key={item.timetable_id || item.id}><div><strong>{item.subject_name}</strong><small>{item.grade}학년</small></div><PackagingItemFields item={item} patchItem={patchItem} assignmentOptions={assignmentOptions} slotCounts={slotCounts} capacity={capacity} readOnly={readOnly} suggestedTeacher={suggestedTeacher} compact />{!readOnly ? <button className="icon-button danger" onClick={() => patchItem(item.timetable_id || item.id, { packaging_date: "", packaging_slot_id: "" })} aria-label={`${item.subject_name} 포장 배정 해제`}><IconX size={16} /></button> : null}</div>)}{!readOnly && assigned.length < capacity && unassignedItems.length ? <label className="packaging-slot-add"><span className="sr-only">{formatKoreanDate(date)} {slot.period_label} 과목 배정</span><select value="" onChange={(event) => event.target.value && assignToSlot(event.target.value, date, slot.id)}><option value="">+ 과목 배정 ({assigned.length}/{capacity})</option>{unassignedItems.map((item) => <option value={item.timetable_id || item.id} key={item.timetable_id || item.id}>{item.grade}학년 · {item.subject_name}</option>)}</select></label> : null}</div>}</td><td>{packagingStaff(config, date, slot.id) || "-"}</td></tr>;
+                  }))}
+                </tbody></table>
+              </div>
+              <div className="packaging-mobile-list">
+                {packagingDates.flatMap((date) => slotRows.map((slot) => {
+                  const key = `${date}|${slot.id}`;
+                  const assigned = items.filter((item) => packagingAssignmentValue(item) === key);
+                  return <section className={`packaging-mobile-card ${slot.kind === "break" ? "break" : ""}`} key={key}><header><div><strong>{formatKoreanDate(date)}</strong><span>{slot.period_label || (slot.kind === "break" ? "쉬는 시간" : "")}</span></div><time>{slot.start_time}~{slot.end_time}</time></header><p className="packaging-staff">교무 담당자 · {packagingStaff(config, date, slot.id) || "미입력"}</p>{slot.kind === "break" ? <p>{slot.note || "쉬는 시간"}</p> : <div className="packaging-slot-items">{assigned.map((item) => <div className="packaging-assigned-item" key={item.timetable_id || item.id}><div><strong>{item.subject_name}</strong><small>{item.grade}학년</small></div><PackagingItemFields item={item} patchItem={patchItem} assignmentOptions={assignmentOptions} slotCounts={slotCounts} capacity={capacity} readOnly={readOnly} suggestedTeacher={suggestedTeacher} compact />{!readOnly ? <button className="icon-button danger" onClick={() => patchItem(item.timetable_id || item.id, { packaging_date: "", packaging_slot_id: "" })}><IconX size={16} /></button> : null}</div>)}{!readOnly && assigned.length < capacity && unassignedItems.length ? <select value="" onChange={(event) => event.target.value && assignToSlot(event.target.value, date, slot.id)}><option value="">+ 과목 배정 ({assigned.length}/{capacity})</option>{unassignedItems.map((item) => <option value={item.timetable_id || item.id} key={item.timetable_id || item.id}>{item.grade}학년 · {item.subject_name}</option>)}</select> : null}</div>}</section>;
+                }))}
+              </div>
+            </>
+          )}
+        </article>
+      ) : (
+        <article className="panel-card packaging-print packaging-print-exam print-section">
+          <div className="card-heading no-print"><div><IconCalendar size={20} /><h3>고사 일정·답안지</h3></div><button className="button button-light" onClick={() => printPackaging("exam")}><IconPrinter size={17} /> A4 가로 인쇄</button></div>
+          <div className="print-heading"><h3>{context.exam_title || "고사"} 일정·답안지</h3><p>대표교사와 답안지 종류, 포장 배정 여부</p></div>
+          {!examGroups.length ? <EmptyState icon={IconCalendar} title="등록된 고사 시간표가 없습니다" description="관리자 설정에서 고사일과 시간표를 먼저 등록하세요." /> : <>
+            <div className="table-wrap packaging-table-desktop"><table className="packaging-exam-table"><thead><tr><th>날짜</th><th>교시</th><th>시간</th><th>1학년</th><th>2학년</th><th>3학년</th></tr></thead><tbody>{examGroups.map((group) => <tr key={group.key}><td>{formatKoreanDate(group.exam_date)}</td><td>{group.period}교시</td><td>{group.time}</td>{[1, 2, 3].map((grade) => <td key={grade}>{(group.grades[grade] || []).length ? group.grades[grade].map((item) => <div className={`packaging-exam-item ${packagingAssignmentValue(item) ? "assigned" : ""}`} key={item.timetable_id || item.id}><div className="packaging-exam-title"><strong>{item.subject_name}</strong><span>{packagingAssignmentValue(item) ? "포장 배정 완료" : "미배정"}</span></div><PackagingItemFields item={item} patchItem={patchItem} assignmentOptions={assignmentOptions} slotCounts={slotCounts} capacity={capacity} readOnly={readOnly} suggestedTeacher={suggestedTeacher} /></div>) : <span className="empty-mark">-</span>}</td>)}</tr>)}</tbody></table></div>
+            <div className="packaging-mobile-list">{examGroups.flatMap((group) => [1, 2, 3].flatMap((grade) => (group.grades[grade] || []).map((item) => <section className={`packaging-mobile-card ${packagingAssignmentValue(item) ? "assigned" : ""}`} key={item.timetable_id || item.id}><header><div><strong>{formatKoreanDate(item.exam_date)}</strong><span>{item.period}교시 · {item.grade}학년</span></div><time>{item.start_time}~{item.end_time}</time></header><div className="packaging-exam-title"><strong>{item.subject_name}</strong><span>{packagingAssignmentValue(item) ? "포장 배정 완료" : "미배정"}</span></div><PackagingItemFields item={item} patchItem={patchItem} assignmentOptions={assignmentOptions} slotCounts={slotCounts} capacity={capacity} readOnly={readOnly} suggestedTeacher={suggestedTeacher} /></section>)))}</div>
+          </>}
+        </article>
+      )}
+      <div className="packaging-savebar no-print"><span>{dirtyIds.size ? `${dirtyIds.size}개 과목이 저장되지 않았습니다.` : "모든 변경 내용이 저장되었습니다."}</span><div>{shareMode ? <button className="button button-light" onClick={exportPackagingWorkbook}><IconFileSpreadsheet size={17} /> Excel 두 시트</button> : null}<LoadingButton className="button button-gold" loading={saving} disabled={!dirtyIds.size || readOnly} onClick={saveItems}><IconDeviceFloppy size={17} /> 변경 내용 저장</LoadingButton></div></div>
+    </section>
+  );
+}
+
+function PackagingShareScreen({ inviteToken }) {
+  const [context, setContext] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [presence, setPresence] = useState({ status: "connecting", onlineCount: 0 });
+  const lastActivityAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    const handleExpired = (event) => {
+      if (!["PACKAGING_SESSION_EXPIRED", "PACKAGING_LINK_EXPIRED"].includes(event.detail?.code)) return;
+      clearPackagingSession();
+      setContext(null);
+      setError(event.detail?.code === "PACKAGING_LINK_EXPIRED"
+        ? "원안 포장 비밀 링크의 사용 기간이 끝났습니다."
+        : "원안 포장 링크 세션이 만료되었습니다. 비밀 링크를 다시 여세요.");
+      setLoading(false);
+    };
+    window.addEventListener("exam-session-expired", handleExpired);
+    return () => window.removeEventListener("exam-session-expired", handleExpired);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function connect() {
+      setLoading(true);
+      setError("");
+      try {
+        // A secret-link visit is intentionally isolated from any normal/admin
+        // session already present in this tab.
+        saveUserSession("");
+        saveAdminSession("");
+        if (inviteToken) {
+          stripPackagingInviteToken();
+          const redeemed = await apiRequest("redeem_exam_packaging_invite", { token: inviteToken });
+          savePackagingSession(redeemed.packaging_session);
+          if (!cancelled) setContext(redeemed.context);
+        } else if (hasPackagingSession()) {
+          const result = await apiRequest("get_exam_packaging", {});
+          if (!cancelled) setContext(result);
+        } else {
+          throw new Error("비밀 편집 링크가 만료되었거나 이 브라우저에 연결 정보가 없습니다.");
+        }
+      } catch (nextError) {
+        clearPackagingSession();
+        if (!cancelled) setError(messageFrom(nextError));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    connect();
+    return () => { cancelled = true; };
+  }, [inviteToken]);
+
+  useEffect(() => {
+    if (!context || !getPackagingSession()) return undefined;
+    let timer;
+    let cancelled = false;
+    async function ping() {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const userActive = Date.now() - lastActivityAtRef.current < 35_000;
+        const result = await apiRequest("presence_ping", {
+          scope: "exam_packaging",
+          packaging_active: userActive,
+          touch: userActive,
+        });
+        if (!cancelled) setPresence({ status: result.connected === false ? "disconnected" : "connected", onlineCount: Math.max(0, Number(result.online_count) || 0) });
+      } catch {
+        if (!cancelled) setPresence((value) => ({ ...value, status: "disconnected" }));
+      }
+    }
+    const tick = async () => { await ping(); timer = setTimeout(tick, 30_000); };
+    tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [context]);
+
+  useEffect(() => {
+    const markActive = () => { lastActivityAtRef.current = Date.now(); };
+    const events = ["pointerdown", "keydown", "scroll", "touchstart"];
+    events.forEach((event) => window.addEventListener(event, markActive, { passive: true }));
+    return () => events.forEach((event) => window.removeEventListener(event, markActive));
+  }, []);
+
+  function returnToLogin() {
+    clearPackagingSession();
+    const url = new URL(window.location.href);
+    url.searchParams.delete("packaging");
+    url.hash = "";
+    window.location.replace(`${url.pathname}${url.search}`);
+  }
+
+  if (loading) return <main className="packaging-gate"><div className="brand-seal"><IconPackage size={34} /></div><h1>{SYSTEM_NAME}</h1><p>비밀 편집 링크를 확인하고 있습니다.</p><span className="spinner" aria-hidden="true" /></main>;
+  if (!context) return <main className="packaging-gate"><div className="brand-seal"><IconLock size={34} /></div><h1>{SYSTEM_NAME}</h1><Notice tone="error">{error}</Notice><button className="button button-light" onClick={returnToLogin}>일반 로그인으로 돌아가기</button></main>;
+
+  return <div className="app-shell packaging-share-shell"><header className="app-header packaging-share-header no-print"><div className="header-inner"><div className="header-brand"><span title={SYSTEM_NAME}><IconPackage size={22} /></span><div><strong>{SYSTEM_NAME}</strong><small>고사 원안 포장 전용 편집</small></div></div><div className="header-actions"><span className={`connection-badge ${presence.status}`} role="status"><span className="connection-dot" />{formatPresenceLabel(presence.status, presence.onlineCount)}</span><span className="packaging-deadline-badge" title={context.config?.input_deadline || "입력 마감 미설정"}><IconClock size={14} /><span>입력 마감 {context.config?.input_deadline ? formatUpdatedAt(context.config.input_deadline) : "미설정"}</span></span></div></div></header><main className="app-main"><PackagingPanel initialContext={context} shareMode presence={presence} onContextChange={setContext} /></main></div>;
+}
+
+function packagingConfigDraftFrom(source = {}) {
+  return {
+    revision: Number(source.revision || 0),
+    input_deadline: String(source.input_deadline || "").slice(0, 16),
+    capacity: Math.max(1, Number(source.capacity || source.slot_capacity || 3)),
+    packaging_dates: (source.packaging_dates || []).map(packagingDateValue).filter(Boolean),
+    rows: (source.rows || source.time_rows || []).map((row, index) => ({
+      id: String(row.id || makeId("packaging-slot")),
+      kind: row.kind === "break" ? "break" : "slot",
+      period_label: String(row.period_label || ""),
+      start_time: String(row.start_time || ""),
+      end_time: String(row.end_time || ""),
+      note: String(row.note || ""),
+      sort_order: Number(row.sort_order ?? index + 1),
+    })),
+    staff_assignments: Array.isArray(source.staff_assignments) ? source.staff_assignments.map((item) => ({
+      packaging_date: packagingDateValue(item),
+      slot_id: String(item.slot_id || ""),
+      staff_name: String(item.staff_name || ""),
+    })) : [],
+  };
+}
+
+function defaultPackagingRows() {
+  const slots = [
+    ["1", "08:30", "08:55"], ["2", "08:55", "09:20"], ["3", "09:20", "09:45"],
+    ["쉬는 시간", "09:45", "10:00", "break"],
+    ["4", "10:00", "10:25"], ["5", "10:25", "10:50"], ["6", "10:50", "11:15"],
+    ["쉬는 시간", "11:15", "11:30", "break"],
+    ["7", "11:30", "11:55"], ["8", "11:55", "12:20"],
+  ];
+  return slots.map(([label, start, end, kind], index) => ({
+    id: makeId("packaging-slot"),
+    kind: kind || "slot",
+    period_label: kind === "break" ? "쉬는 시간" : `${label}회차`,
+    start_time: start,
+    end_time: end,
+    note: kind === "break" ? "쉬는 시간" : "",
+    sort_order: index + 1,
+  }));
+}
+
 function SetupPanel({ bootstrap, onBootstrap }) {
   const [active, setActive] = useState("access-users");
   const [newDate, setNewDate] = useState("");
@@ -1533,6 +2028,10 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   const [newAccessUser, setNewAccessUser] = useState({ login_name: "", pin: "" });
   const [accessUserNames, setAccessUserNames] = useState({});
   const [accessUserPins, setAccessUserPins] = useState({});
+  const [packagingConfigDraft, setPackagingConfigDraft] = useState(() => packagingConfigDraftFrom(bootstrap.exam_packaging_config));
+  const [packagingDateInput, setPackagingDateInput] = useState("");
+  const [inviteExpiresAt, setInviteExpiresAt] = useState("");
+  const [oneTimeInviteLink, setOneTimeInviteLink] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const studentFileRef = useRef(null);
@@ -1563,6 +2062,10 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     setAccessUserNames(Object.fromEntries(users.map((item) => [String(item.id), item.login_name])));
     setAccessUserPins(Object.fromEntries(users.map((item) => [String(item.id), ""])));
   }, [bootstrap.access_users]);
+
+  useEffect(() => {
+    setPackagingConfigDraft(packagingConfigDraftFrom(bootstrap.exam_packaging_config));
+  }, [bootstrap.exam_packaging_config]);
 
   useEffect(() => {
     const available = bootstrap.classes
@@ -1643,6 +2146,139 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     }, active ? "사용자 접속을 허용했습니다." : "사용자 접속을 중지했습니다.");
   }
 
+  function updatePackagingRow(id, patch) {
+    setPackagingConfigDraft((current) => ({
+      ...current,
+      rows: current.rows.map((row) => String(row.id) === String(id) ? { ...row, ...patch } : row),
+    }));
+  }
+
+  function addPackagingDate() {
+    if (!packagingDateInput) return setError("포장일을 선택하세요.");
+    setPackagingConfigDraft((current) => ({
+      ...current,
+      packaging_dates: [...new Set([...current.packaging_dates, packagingDateInput])].sort(),
+    }));
+    setPackagingDateInput("");
+  }
+
+  function addPackagingRow(kind = "slot") {
+    setPackagingConfigDraft((current) => ({
+      ...current,
+      rows: [...current.rows, {
+        id: makeId("packaging-slot"),
+        kind,
+        period_label: kind === "break" ? "쉬는 시간" : `${current.rows.filter((row) => row.kind !== "break").length + 1}회차`,
+        start_time: "",
+        end_time: "",
+        note: kind === "break" ? "쉬는 시간" : "",
+        sort_order: current.rows.length + 1,
+      }],
+    }));
+  }
+
+  function updatePackagingStaff(date, slotId, staffName) {
+    setPackagingConfigDraft((current) => ({
+      ...current,
+      staff_assignments: current.staff_assignments
+        .filter((item) => !(item.packaging_date === date && String(item.slot_id) === String(slotId)))
+        .concat(String(staffName).trim() ? [{ packaging_date: date, slot_id: slotId, staff_name: staffName }] : []),
+    }));
+  }
+
+  function normalizedPackagingConfig() {
+    return {
+      revision: Number(packagingConfigDraft.revision || 0),
+      input_deadline: String(packagingConfigDraft.input_deadline || ""),
+      capacity: Number(packagingConfigDraft.capacity || 3),
+      packaging_dates: [...new Set(packagingConfigDraft.packaging_dates.map(String))].sort(),
+      rows: packagingConfigDraft.rows.map((row, index) => ({
+        ...row,
+        id: String(row.id),
+        period_label: String(row.period_label || "").trim(),
+        start_time: String(row.start_time || ""),
+        end_time: String(row.end_time || ""),
+        note: String(row.note || "").trim(),
+        sort_order: index + 1,
+      })),
+      staff_assignments: packagingConfigDraft.staff_assignments
+        .map((item) => ({ ...item, staff_name: String(item.staff_name || "").trim() }))
+        .filter((item) => item.staff_name),
+    };
+  }
+
+  async function savePackagingConfig() {
+    const config = normalizedPackagingConfig();
+    if (!config.input_deadline) return setError("입력 마감일시를 입력하세요.");
+    if (!Number.isInteger(config.capacity) || config.capacity < 1 || config.capacity > 20) return setError("슬롯 정원은 1~20 사이의 정수로 입력하세요.");
+    if (!config.packaging_dates.length) return setError("포장일을 한 개 이상 등록하세요.");
+    if (!config.rows.some((row) => row.kind === "slot")) return setError("과목을 배정할 시간대를 한 개 이상 등록하세요.");
+    if (config.rows.some((row) => !row.start_time || !row.end_time || row.start_time >= row.end_time)) return setError("각 시간대의 시작·종료 시간을 확인하세요.");
+    setMessage(""); setError("");
+    try {
+      const preview = await apiRequest("save_exam_packaging_config", {
+        expected_revision: Number(packagingConfigDraft.revision || 0),
+        config,
+        preview_only: true,
+      });
+      const affected = Number(preview?.impact?.affected_count || preview?.impact?.affected_items || preview?.impact?.assignments || preview?.affected_items || 0);
+      if (affected && !window.confirm(`설정 변경으로 기존 포장 배정 ${affected}건이 비워집니다. 계속할까요?`)) return;
+      const result = await apiRequest("save_exam_packaging_config", {
+        expected_revision: Number(packagingConfigDraft.revision || 0),
+        config,
+        force: affected > 0,
+      });
+      onBootstrap({ ...bootstrap, ...result });
+      setPackagingConfigDraft(packagingConfigDraftFrom(result.exam_packaging_config || result.config || config));
+      setMessage("원안 포장 설정을 저장했습니다.");
+    } catch (nextError) {
+      if (nextError?.code === "PACKAGING_CONFIG_CONFLICT") {
+        setError("다른 관리자가 먼저 설정을 수정했습니다. 최신 설정을 다시 불러와 확인하세요.");
+      } else setError(messageFrom(nextError));
+    }
+  }
+
+  async function createPackagingInvite() {
+    if (!inviteExpiresAt) return setError("비밀 링크 종료일시를 입력하세요.");
+    if (bootstrap.exam_packaging_invite_status?.active && !window.confirm("기존 비밀 링크와 링크 세션을 즉시 폐기하고 새 링크를 발급할까요?")) return;
+    setMessage(""); setError(""); setOneTimeInviteLink("");
+    try {
+      const result = await apiRequest("create_exam_packaging_invite", { expires_at: inviteExpiresAt });
+      const token = String(result.token || result.invite_token || "");
+      if (!token) throw new Error("서버가 비밀 링크 토큰을 반환하지 않았습니다.");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("packaging");
+      url.hash = `packaging=${encodeURIComponent(token)}`;
+      setOneTimeInviteLink(url.toString());
+      onBootstrap({ ...bootstrap, exam_packaging_invite_status: result.invite_status || result.exam_packaging_invite_status || { active: true, expires_at: inviteExpiresAt } });
+      setMessage("비밀 링크를 발급했습니다. 이 주소는 지금 한 번만 표시됩니다.");
+    } catch (nextError) { setError(messageFrom(nextError)); }
+  }
+
+  async function disablePackagingInvite() {
+    if (!window.confirm("비밀 링크와 현재 링크 세션을 모두 즉시 폐기할까요?")) return;
+    setMessage(""); setError("");
+    try {
+      const result = await apiRequest("disable_exam_packaging_invite", {});
+      onBootstrap({
+        ...bootstrap,
+        exam_packaging_invite_status: result.invite_status || result.exam_packaging_invite_status || { active: false },
+      });
+      setOneTimeInviteLink("");
+      setMessage("비밀 링크를 폐기했습니다.");
+    } catch (nextError) { setError(messageFrom(nextError)); }
+  }
+
+  async function copyPackagingInvite() {
+    if (!oneTimeInviteLink) return;
+    try {
+      await navigator.clipboard.writeText(oneTimeInviteLink);
+      setMessage("비밀 링크를 복사했습니다.");
+    } catch {
+      setError("링크를 자동 복사하지 못했습니다. 주소를 직접 선택해 복사하세요.");
+    }
+  }
+
   async function deleteExamDate(item) {
     setMessage("");
     setError("");
@@ -1659,7 +2295,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     const impact = preview?.impact || {};
     if (!window.confirm(
       `${item.label || item.exam_date} 고사일을 삭제할까요?\n` +
-      `시간표 ${impact.timetable || 0}건, 결시 ${impact.absences || 0}건, 제출 ${impact.completions || 0}건, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
+      `시간표 ${impact.timetable || 0}건, 원안 포장 ${impact.packaging_items || impact.packaging || 0}건, 결시 ${impact.absences || 0}건, 제출 ${impact.completions || 0}건, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
     )) return;
     await commit(
       "delete_exam_date",
@@ -1892,7 +2528,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
       : "다른 시간표에서 같은 과목을 사용하므로 선택과목 등록은 유지";
     if (!window.confirm(
       `${item.exam_date} ${item.period}교시 '${item.subject_name}' 시간표를 삭제할까요?\n` +
-      `${enrollmentText}, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
+      `${enrollmentText}, 원안 포장 ${impact.packaging_items || impact.packaging || 0}건, 자리배치 ${impact.seat_charts || 0}건이 함께 정리됩니다.`,
     )) return;
     await commit("delete_timetable", { id }, "시간표와 참조 데이터를 정리했습니다.");
   }
@@ -2014,6 +2650,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     ["classes", IconUsers, "학급·학생"],
     ["timetable", IconClock, "시간표"],
     ["electives", IconBook, "선택과목"],
+    ["packaging", IconPackage, "원안 포장 설정"],
     ["notice", IconFileText, "가정통신문"],
     ["print", IconPrinter, "개인 시간표"],
     ["cleanup", IconTrash, "기록 정리"],
@@ -2223,6 +2860,65 @@ function SetupPanel({ bootstrap, onBootstrap }) {
             </article>
           ) : null}
 
+          {active === "packaging" ? (
+            <article className="panel-card packaging-config-panel">
+              <div className="card-heading">
+                <div><IconPackage size={20} /><h3>원안 포장 설정</h3></div>
+                <span>설정 revision {packagingConfigDraft.revision}</span>
+              </div>
+              <p className="body-copy">포장일과 25분 시간대, 교무 담당자를 정한 뒤 비밀 편집 링크를 발급하세요. 사용 중인 날짜·시간대를 없애면 영향 건수를 먼저 확인합니다.</p>
+
+              <section className="packaging-config-section">
+                <div className="card-heading"><div><IconClock size={18} /><h3>마감과 기본값</h3></div><button className="button button-primary" onClick={savePackagingConfig}><IconDeviceFloppy size={17} /> 전체 설정 저장</button></div>
+                <div className="form-grid packaging-config-basics">
+                  <label>입력 마감일시<input type="datetime-local" value={packagingConfigDraft.input_deadline} onChange={(event) => setPackagingConfigDraft((current) => ({ ...current, input_deadline: event.target.value }))} /></label>
+                  <label>시간대별 정원<input type="number" min="1" max="20" value={packagingConfigDraft.capacity} onChange={(event) => setPackagingConfigDraft((current) => ({ ...current, capacity: Number(event.target.value) }))} /></label>
+                </div>
+              </section>
+
+              <section className="packaging-config-section">
+                <div className="card-heading"><div><IconCalendar size={18} /><h3>포장일</h3></div><span>{packagingConfigDraft.packaging_dates.length}일</span></div>
+                <div className="inline-form"><label>날짜<input type="date" value={packagingDateInput} onChange={(event) => setPackagingDateInput(event.target.value)} /></label><button className="button button-secondary" onClick={addPackagingDate}><IconPlus size={17} /> 포장일 추가</button></div>
+                <div className="packaging-date-chips">{packagingConfigDraft.packaging_dates.map((date) => <span key={date}>{formatKoreanDate(date)}<button type="button" onClick={() => setPackagingConfigDraft((current) => ({ ...current, packaging_dates: current.packaging_dates.filter((item) => item !== date), staff_assignments: current.staff_assignments.filter((item) => item.packaging_date !== date) }))} aria-label={`${formatKoreanDate(date)} 삭제`}><IconX size={14} /></button></span>)}</div>
+              </section>
+
+              <section className="packaging-config-section">
+                <div className="card-heading">
+                  <div><IconListCheck size={18} /><h3>25분 시간대</h3></div>
+                  <div className="card-heading-actions">
+                    <button className="button button-light" onClick={() => setPackagingConfigDraft((current) => ({ ...current, rows: defaultPackagingRows(), staff_assignments: [] }))}><IconRefresh size={17} /> 기본 시간대 생성</button>
+                    <button className="button button-light" onClick={() => addPackagingRow("slot")}><IconPlus size={17} /> 시간대</button>
+                    <button className="button button-light" onClick={() => addPackagingRow("break")}><IconPlus size={17} /> 쉬는 시간</button>
+                  </div>
+                </div>
+                <div className="packaging-row-editor">
+                  {packagingConfigDraft.rows.map((row, index) => <div className={row.kind === "break" ? "break" : ""} key={row.id}>
+                    <span className="packaging-row-order">{index + 1}</span>
+                    <label>종류<select value={row.kind} onChange={(event) => updatePackagingRow(row.id, { kind: event.target.value })}><option value="slot">포장 시간</option><option value="break">쉬는 시간</option></select></label>
+                    <label>표시 이름<input value={row.period_label} onChange={(event) => updatePackagingRow(row.id, { period_label: event.target.value })} placeholder="예: 1회차" /></label>
+                    <label>시작<input type="time" value={row.start_time} onChange={(event) => updatePackagingRow(row.id, { start_time: event.target.value })} /></label>
+                    <label>종료<input type="time" value={row.end_time} onChange={(event) => updatePackagingRow(row.id, { end_time: event.target.value })} /></label>
+                    <label>메모<input value={row.note} onChange={(event) => updatePackagingRow(row.id, { note: event.target.value })} placeholder={row.kind === "break" ? "쉬는 시간" : "선택"} /></label>
+                    <div className="packaging-row-buttons"><button type="button" className="icon-button" disabled={index === 0} onClick={() => setPackagingConfigDraft((current) => { const rows = [...current.rows]; [rows[index - 1], rows[index]] = [rows[index], rows[index - 1]]; return { ...current, rows }; })} aria-label="위로 이동">↑</button><button type="button" className="icon-button" disabled={index === packagingConfigDraft.rows.length - 1} onClick={() => setPackagingConfigDraft((current) => { const rows = [...current.rows]; [rows[index], rows[index + 1]] = [rows[index + 1], rows[index]]; return { ...current, rows }; })} aria-label="아래로 이동">↓</button><button type="button" className="icon-button danger" onClick={() => setPackagingConfigDraft((current) => ({ ...current, rows: current.rows.filter((item) => item.id !== row.id), staff_assignments: current.staff_assignments.filter((item) => String(item.slot_id) !== String(row.id)) }))} aria-label={`${row.period_label || `${index + 1}번째`} 삭제`}><IconTrash size={16} /></button></div>
+                  </div>)}
+                </div>
+              </section>
+
+              <section className="packaging-config-section">
+                <div className="card-heading"><div><IconUserCheck size={18} /><h3>날짜·시간대별 교무 담당자</h3></div></div>
+                {packagingConfigDraft.packaging_dates.length && packagingConfigDraft.rows.length ? <div className="packaging-staff-grid">{packagingConfigDraft.packaging_dates.flatMap((date) => packagingConfigDraft.rows.map((row) => <label key={`${date}|${row.id}`}><span>{formatKoreanDate(date)} · {row.period_label || `${row.start_time}~${row.end_time}`}{row.kind === "break" ? " (쉬는 시간)" : ""}</span><input value={packagingStaff(packagingConfigDraft, date, row.id)} onChange={(event) => updatePackagingStaff(date, row.id, event.target.value)} placeholder="교무 담당자 입력" maxLength="50" /></label>))}</div> : <EmptyState icon={IconUserCheck} title="담당자 입력 칸이 아직 없습니다" description="포장일과 시간행을 먼저 등록하세요." />}
+              </section>
+
+              <section className="packaging-config-section packaging-invite-section">
+                <div className="card-heading"><div><IconLink size={18} /><h3>비밀 편집 링크</h3></div><span className={`status-pill ${bootstrap.exam_packaging_invite_status?.active ? "status-complete" : "status-wait"}`}>{bootstrap.exam_packaging_invite_status?.active ? "사용 중" : "미발급·폐기"}</span></div>
+                <p className="body-copy">링크는 원안 포장 전용 화면만 열 수 있습니다. 재발급하거나 폐기하면 이전 링크와 링크 세션이 즉시 종료됩니다.</p>
+                {bootstrap.exam_packaging_invite_status?.expires_at ? <p className="packaging-invite-status">현재 링크 종료 · {formatUpdatedAt(bootstrap.exam_packaging_invite_status.expires_at)}</p> : null}
+                <div className="inline-form"><label>링크 종료일시<input type="datetime-local" value={inviteExpiresAt} onChange={(event) => setInviteExpiresAt(event.target.value)} /></label><button className="button button-secondary" onClick={createPackagingInvite}><IconLink size={17} /> {bootstrap.exam_packaging_invite_status?.active ? "재발급" : "발급"}</button>{bootstrap.exam_packaging_invite_status?.active ? <button className="button button-danger" onClick={disablePackagingInvite}><IconTrash size={17} /> 폐기</button> : null}</div>
+                {oneTimeInviteLink ? <div className="one-time-link" role="status"><strong>한 번만 표시되는 비밀 링크</strong><p>필요한 교사에게 안전한 방법으로 전달하세요. 링크 전체가 비밀 정보입니다.</p><div><input readOnly value={oneTimeInviteLink} onFocus={(event) => event.target.select()} aria-label="비밀 편집 링크" /><button className="button button-gold" onClick={copyPackagingInvite}><IconLink size={17} /> 복사</button></div></div> : null}
+              </section>
+            </article>
+          ) : null}
+
           {active === "notice" ? (
             <article className="panel-card notice-panel print-section">
               <div className="card-heading no-print">
@@ -2314,6 +3010,10 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 }
 
 export function App() {
+  const [packagingInviteToken] = useState(() => extractPackagingInviteToken());
+  const [packagingShareRequested] = useState(() => Boolean(
+    extractPackagingInviteToken() || new URLSearchParams(window.location.search).get("packaging") === "1",
+  ));
   const [loggedIn, setLoggedIn] = useState(hasUserSession());
   const [admin, setAdmin] = useState(hasUserSession() && hasAdminSession());
   const [bootstrap, setBootstrap] = useState(EMPTY_BOOTSTRAP);
@@ -2388,6 +3088,7 @@ export function App() {
       try {
         const result = await apiRequest("presence_ping", {
           user_active: Date.now() - lastActivityAtRef.current < 35_000,
+          scope: activeTab === "packaging" ? "exam_packaging" : "system",
         });
         if (!cancelled) {
           setPresence({
@@ -2434,7 +3135,7 @@ export function App() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, [loggedIn]);
+  }, [loggedIn, activeTab]);
 
   useEffect(() => {
     if (!loggedIn) return undefined;
@@ -2476,6 +3177,10 @@ export function App() {
     setStartupError("");
   }
 
+  if (packagingShareRequested) {
+    return <PackagingShareScreen inviteToken={packagingInviteToken} />;
+  }
+
   if (!loggedIn) {
     return (
       <LoginScreen
@@ -2502,6 +3207,7 @@ export function App() {
     ["hq", IconBuildingBank, "고사본부", true],
     ["seating", IconArmchair, "자리배치", true],
     ["settings", IconSettings, "설정", true],
+    ["packaging", IconPackage, "고사 원안 포장", false],
   ];
 
   return (
@@ -2547,6 +3253,7 @@ export function App() {
         {activeTab === "hq" && admin ? <HqPanel bootstrap={bootstrap} /> : null}
         {activeTab === "seating" && admin ? <SeatPanel bootstrap={bootstrap} onBootstrap={setBootstrap} /> : null}
         {activeTab === "settings" && admin ? <SetupPanel bootstrap={bootstrap} onBootstrap={setBootstrap} /> : null}
+        {activeTab === "packaging" ? <PackagingPanel currentUser={bootstrap.current_user} presence={presence} /> : null}
       </main>
 
       <AdminDialog
