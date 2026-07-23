@@ -12,7 +12,7 @@ When implementing from a selected generated mock, treat that image as the source
 - Use the source navy/gold visual language, Pretendard UI text, and a Korean serif display face.
 - Fix the source's mobile horizontal overflow with a single-column responsive layout and horizontally scrollable navigation.
 - The production backend is a school-owned Google Sheet with bound Apps Script. The frontend must never contain real staff login names, PINs, administrator passwords, student names, or backend secrets.
-- Teacher access uses an administrator-managed login name plus a six-digit personal PIN. Headquarters, seating, setup, destructive actions, and exports require an administrator session.
+- Teacher access uses an administrator-managed login name plus a four-to-six-digit personal PIN. Headquarters, seating, setup, destructive actions, and exports require an administrator session.
 - The login page exposes no staff-name directory. A separate administrator entry allows initial access-user setup and recovery when no users are active.
 - Use `한양대학교사범대학부속고등학교 통합 시스템` as the product name across the login page, header, browser metadata, demo data, and public configuration.
 - Do not show demo labels, demo links, infrastructure copy, or a product footer in the application UI.

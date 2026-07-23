@@ -45,7 +45,7 @@ import {
   formatKoreanWeekday,
   formatPresenceLabel,
   generateSeatAssignment,
-  isSixDigitPin,
+  isValidPin,
   makeId,
   normalizeLoginName,
   resolveStudentRoom,
@@ -298,8 +298,8 @@ function LoginScreen({ onLogin, onAdminEntry }) {
   async function submit(event) {
     event.preventDefault();
     const normalizedName = normalizeLoginName(loginName);
-    if (!normalizedName || !isSixDigitPin(pin)) {
-      setError("접속 이름과 숫자 6자리 PIN을 확인하세요.");
+    if (!normalizedName || !isValidPin(pin)) {
+      setError("접속 이름과 숫자 4~6자리 PIN을 확인하세요.");
       return;
     }
     setLoading(true);
@@ -342,11 +342,12 @@ function LoginScreen({ onLogin, onAdminEntry }) {
               id="login-pin"
               type="password"
               inputMode="numeric"
-              pattern="[0-9]{6}"
+              pattern="[0-9]{4,6}"
+              minLength="4"
               maxLength="6"
               value={pin}
               onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="숫자 6자리"
+              placeholder="숫자 4~6자리"
               autoComplete="current-password"
               required
             />
@@ -2111,7 +2112,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     event.preventDefault();
     const loginName = normalizeLoginName(newAccessUser.login_name);
     if (!loginName) return setError("접속 이름을 입력하세요.");
-    if (!isSixDigitPin(newAccessUser.pin)) return setError("PIN은 숫자 6자리로 입력하세요.");
+    if (!isValidPin(newAccessUser.pin)) return setError("PIN은 숫자 4~6자리로 입력하세요.");
     const result = await commit("save_access_user", {
       login_name: loginName,
       pin: newAccessUser.pin,
@@ -2130,7 +2131,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   async function resetAccessUserPin(user) {
     const pin = accessUserPins[String(user.id)] || "";
-    if (!isSixDigitPin(pin)) return setError("새 PIN은 숫자 6자리로 입력하세요.");
+    if (!isValidPin(pin)) return setError("새 PIN은 숫자 4~6자리로 입력하세요.");
     const result = await commit("reset_access_user_pin", {
       id: user.id,
       pin,
@@ -2674,7 +2675,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
               <p className="body-copy">등록된 접속 이름과 개인 PIN을 가진 사용자만 시스템에 들어올 수 있습니다. 동명이인은 담당 학년처럼 구분 문구를 이름에 덧붙이세요.</p>
               <form className="access-user-create" onSubmit={addAccessUser}>
                 <label>접속 이름<input value={newAccessUser.login_name} onChange={(event) => setNewAccessUser({ ...newAccessUser, login_name: event.target.value })} maxLength="50" autoComplete="off" placeholder="예: 김민수(1학년)" required /></label>
-                <label>개인 PIN<input type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={newAccessUser.pin} onChange={(event) => setNewAccessUser({ ...newAccessUser, pin: event.target.value.replace(/\D/g, "").slice(0, 6) })} autoComplete="new-password" placeholder="숫자 6자리" required /></label>
+                <label>개인 PIN<input type="password" inputMode="numeric" pattern="[0-9]{4,6}" minLength="4" maxLength="6" value={newAccessUser.pin} onChange={(event) => setNewAccessUser({ ...newAccessUser, pin: event.target.value.replace(/\D/g, "").slice(0, 6) })} autoComplete="new-password" placeholder="숫자 4~6자리" required /></label>
                 <button className="button button-secondary" type="submit"><IconPlus size={17} /> 사용자 추가</button>
               </form>
               <div className="access-user-list">
@@ -2687,7 +2688,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                     <div className="access-user-edit-grid">
                       <label>접속 이름<input value={accessUserNames[String(user.id)] ?? user.login_name} onChange={(event) => setAccessUserNames((current) => ({ ...current, [user.id]: event.target.value }))} maxLength="50" /></label>
                       <button className="button button-light" type="button" onClick={() => saveAccessUserName(user)}><IconDeviceFloppy size={16} /> 이름 저장</button>
-                      <label>새 PIN<input type="password" inputMode="numeric" pattern="[0-9]{6}" maxLength="6" value={accessUserPins[String(user.id)] || ""} onChange={(event) => setAccessUserPins((current) => ({ ...current, [user.id]: event.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="new-password" placeholder="숫자 6자리" /></label>
+                      <label>새 PIN<input type="password" inputMode="numeric" pattern="[0-9]{4,6}" minLength="4" maxLength="6" value={accessUserPins[String(user.id)] || ""} onChange={(event) => setAccessUserPins((current) => ({ ...current, [user.id]: event.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="new-password" placeholder="숫자 4~6자리" /></label>
                       <button className="button button-light" type="button" onClick={() => resetAccessUserPin(user)}><IconRefresh size={16} /> PIN 재설정</button>
                     </div>
                   </section>

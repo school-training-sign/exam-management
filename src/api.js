@@ -8,7 +8,7 @@ import {
   filterAbsences,
   isExamPackagingDeadlinePassed,
   makeId,
-  isSixDigitPin,
+  isValidPin,
   normalizeExamPackagingConfig,
   normalizeLoginName,
   seatChartKey,
@@ -463,7 +463,7 @@ export class DemoRepository {
         const user = this.accessUsers.find((item) =>
           item.active !== false && accessUserNameKey(item.login_name) === nameKey
         );
-        if (!user || String(payload.pin || "") !== user.pin) {
+        if (!isValidPin(payload.pin) || !user || String(payload.pin || "") !== user.pin) {
           throw new ApiError("접속 이름 또는 PIN을 확인하세요.", {
             code: "INVALID_LOGIN",
           });
@@ -557,8 +557,8 @@ export class DemoRepository {
           existing.login_name = loginName;
           existing.updated_at = now;
         } else {
-          if (!isSixDigitPin(payload.pin)) {
-            throw new ApiError("PIN은 숫자 6자리로 입력하세요.", { code: "INVALID_PIN" });
+          if (!isValidPin(payload.pin)) {
+            throw new ApiError("PIN은 숫자 4~6자리로 입력하세요.", { code: "INVALID_PIN" });
           }
           this.accessUsers.push({
             id: makeId("access-user"),
@@ -593,8 +593,8 @@ export class DemoRepository {
             code: "ACCESS_USER_NOT_FOUND",
           });
         }
-        if (!isSixDigitPin(payload.pin)) {
-          throw new ApiError("PIN은 숫자 6자리로 입력하세요.", { code: "INVALID_PIN" });
+        if (!isValidPin(payload.pin)) {
+          throw new ApiError("PIN은 숫자 4~6자리로 입력하세요.", { code: "INVALID_PIN" });
         }
         existing.pin = String(payload.pin);
         existing.session_version += 1;

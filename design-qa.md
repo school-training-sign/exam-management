@@ -107,7 +107,7 @@ LOCAL/DEMO FINAL RESULT: PASSED · SCHOOL APPS SCRIPT DEPLOYMENT PENDING
 
 ## Functional QA
 
-- 허용된 접속 이름과 숫자 6자리 PIN 로그인
+- 허용된 접속 이름과 숫자 4~6자리 PIN 로그인
 - 미등록·비활성 이름과 잘못된 PIN의 동일 오류 처리
 - 로그인 화면 관리자 설정으로 첫 사용자 등록·복구
 - 접속 이름 수정·PIN 재설정·비활성화 후 기존 세션 만료

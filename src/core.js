@@ -15,9 +15,12 @@ export function normalizeLoginName(value, maxLength = 50) {
     .slice(0, maxLength);
 }
 
-export function isSixDigitPin(value) {
-  return /^\d{6}$/.test(String(value ?? ""));
+export function isValidPin(value) {
+  return /^\d{4,6}$/.test(String(value ?? ""));
 }
+
+// 이전 함수명을 가져오는 코드도 같은 PIN 규칙을 사용한다.
+export const isSixDigitPin = isValidPin;
 
 export function makeId(prefix = "id") {
   if (globalThis.crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`;

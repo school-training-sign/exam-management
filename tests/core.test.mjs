@@ -20,6 +20,7 @@ import {
   formatPresenceLabel,
   generateSeatAssignment,
   isSixDigitPin,
+  isValidPin,
   isExamPackagingDeadlinePassed,
   normalizeExamPackagingConfig,
   normalizeLoginName,
@@ -63,12 +64,17 @@ test("미사용 타이머는 5분 뒤 로그아웃하고 활동 때마다 다시
   assert.deepEqual(cleared, [1, 2]);
 });
 
-test("접속 이름은 유니코드와 연속 공백을 정규화하고 PIN은 숫자 6자리만 허용한다", () => {
+test("접속 이름은 유니코드와 연속 공백을 정규화하고 PIN은 숫자 4~6자리만 허용한다", () => {
   assert.equal(normalizeLoginName("  테스트　교사  "), "테스트 교사");
   assert.equal(normalizeLoginName("ＫＩＭ  선생님"), "KIM 선생님");
+  assert.equal(isValidPin("1234"), true);
+  assert.equal(isValidPin("12345"), true);
+  assert.equal(isValidPin("123456"), true);
+  assert.equal(isValidPin("123"), false);
+  assert.equal(isValidPin("1234567"), false);
+  assert.equal(isValidPin("12가4"), false);
   assert.equal(isSixDigitPin("123456"), true);
-  assert.equal(isSixDigitPin("12345"), false);
-  assert.equal(isSixDigitPin("12가456"), false);
+  assert.equal(isSixDigitPin("1234"), true);
 });
 
 test("교과목 엑셀은 과목명 헤더를 인식하고 이름을 정리해 정렬한다", () => {
