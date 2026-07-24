@@ -1801,7 +1801,7 @@ function PackagingPanel({ initialContext = null, shareMode = false, currentUser 
   }, new Map()).values()].sort((a, b) => String(a.exam_date).localeCompare(String(b.exam_date)) || a.period - b.period);
   const unassignedItems = items.filter((item) => !packagingAssignmentValue(item));
 
-  if (loading && !context) return <section className="page-section"><EmptyState icon={IconPackage} title="원안 포장 정보를 불러오는 중입니다" description="학교 소유 시트와 안전하게 연결하고 있습니다." /></section>;
+  if (loading && !context) return <section className="page-section"><EmptyState icon={IconPackage} title="원안 포장 화면을 준비하고 있습니다" description="잠시만 기다려 주세요." /></section>;
   if (!context) return <section className="page-section"><Notice tone="error">{error || "원안 포장 정보를 불러오지 못했습니다."}</Notice><button className="button button-light" onClick={() => refresh()}><IconRefresh size={17} /> 다시 불러오기</button></section>;
 
   return (

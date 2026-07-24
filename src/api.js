@@ -30,6 +30,7 @@ const CLIENT_ID_KEY = "exam-management:client-id";
 // Keep the browser deadline comfortably above that ceiling so a request cannot
 // be aborted while the server is still waiting to commit it.
 const REQUEST_TIMEOUT_MS = 45_000;
+const PACKAGING_READ_TIMEOUT_MS = 15_000;
 const PRESENCE_TIMEOUT_MS = 8_000;
 const TRANSIENT_CODES = new Set(["NETWORK_ERROR", "TIMEOUT", "LOCK_TIMEOUT", "BUSY", "TEMPORARY_ERROR"]);
 const SESSION_CODES = new Set([
@@ -1515,18 +1516,27 @@ class AppsScriptRepository {
         "학교 백엔드 주소가 아직 설정되지 않았습니다. config.js를 연결하세요.",
       );
     }
+    const userSession = sessionStorage.getItem(USER_SESSION_KEY) || "";
+    const packagingSession = userSession
+      ? ""
+      : sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
     const body = {
       action,
       ...payload,
-      user_session: sessionStorage.getItem(USER_SESSION_KEY) || "",
+      user_session: userSession,
       admin_session: sessionStorage.getItem(ADMIN_SESSION_KEY) || "",
-      packaging_session: sessionStorage.getItem(PACKAGING_SESSION_KEY) || "",
+      packaging_session: packagingSession,
       client_id: getClientId(),
       request_id: payload.request_id || crypto.randomUUID?.() || makeId("request"),
     };
     const presenceRequest = action === "presence_ping";
-    const delays = presenceRequest ? [0] : [0, 300, 900];
-    const timeoutMs = presenceRequest ? PRESENCE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+    const packagingReadRequest = action === "get_exam_packaging";
+    const delays = presenceRequest || packagingReadRequest ? [0] : [0, 300, 900];
+    const timeoutMs = presenceRequest
+      ? PRESENCE_TIMEOUT_MS
+      : packagingReadRequest
+        ? PACKAGING_READ_TIMEOUT_MS
+        : REQUEST_TIMEOUT_MS;
     let lastError;
 
     for (const delay of delays) {
@@ -1649,7 +1659,9 @@ export function sessionErrorBelongsToCurrentSession(
 export async function apiRequest(action, payload) {
   const requestUserSession = sessionStorage.getItem(USER_SESSION_KEY) || "";
   const requestAdminSession = sessionStorage.getItem(ADMIN_SESSION_KEY) || "";
-  const requestPackagingSession = sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
+  const requestPackagingSession = requestUserSession
+    ? ""
+    : sessionStorage.getItem(PACKAGING_SESSION_KEY) || "";
   try {
     return await repository.request(action, payload);
   } catch (error) {
