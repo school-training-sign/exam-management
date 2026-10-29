@@ -82,6 +82,7 @@ const EMPTY_BOOTSTRAP = {
   exam_packaging_config: {},
   exam_packaging_invite_status: {},
   access_users: [],
+  academic_link: null,
   current_user: null,
 };
 
@@ -2010,6 +2011,7 @@ function defaultPackagingRows() {
 
 function SetupPanel({ bootstrap, onBootstrap }) {
   const [active, setActive] = useState("access-users");
+  const [academicSyncing, setAcademicSyncing] = useState(false);
   const [newDate, setNewDate] = useState("");
   const [newDateLabel, setNewDateLabel] = useState("");
   const [grade, setGrade] = useState(1);
@@ -2101,6 +2103,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
       setError(messageFrom(nextError));
       return null;
     }
+  }
+
+  async function syncAcademicRoster() {
+    setAcademicSyncing(true);
+    try { await commit("sync_academic_data", {}, "학적 통합의 학생 명단과 선택과목을 반영했습니다."); }
+    finally { setAcademicSyncing(false); }
   }
 
   async function addDate() {
@@ -2656,6 +2664,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   const menu = [
     ["access-users", IconUserCheck, "접속 사용자"],
+    ["academic-link", IconLink, "학적 통합 연결"],
     ["dates", IconCalendar, "고사일"],
     ["classes", IconUsers, "학급·학생"],
     ["timetable", IconClock, "시간표"],
@@ -2670,11 +2679,27 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     <section className="page-section">
       <SectionHeader title="관리자 설정" description="고사 운영에 필요한 기준 정보를 순서대로 등록하세요." />
       <Notice>{message}</Notice><Notice tone="error">{error}</Notice>
+      {bootstrap.academic_link?.configured && ["classes", "electives"].includes(active) ? <Notice>학급·학생·수강 과목은 학적 통합에서 관리합니다. 변경 후 ‘학적 통합 연결 → 지금 동기화’를 누르세요. 선택과목 엑셀은 등록된 수강생의 시험 호실만 갱신합니다.</Notice> : null}
       <div className="settings-layout">
         <nav className="settings-nav no-print" aria-label="설정 메뉴">
           {menu.map(([id, Icon, label]) => <button key={id} className={active === id ? "active" : ""} onClick={() => setActive(id)}><Icon size={18} /><span>{label}</span><IconChevronRight size={16} /></button>)}
         </nav>
         <div className="settings-content">
+          {active === "academic-link" ? (
+            <article className="panel-card">
+              <div className="card-heading"><div><IconLink size={20} /><h3>학적 통합 연결</h3></div>
+                <LoadingButton className="button button-primary" loading={academicSyncing} disabled={!bootstrap.academic_link?.configured} onClick={syncAcademicRoster}><IconRefresh size={17} /> 지금 동기화</LoadingButton>
+              </div>
+              <p className="body-copy">학적 통합의 학급·학생 명단·교육과정·선택과목·분반을 함께 사용합니다. 고사 정보의 학년도와 학기를 기준으로 연결하며, 다시 접속하거나 새로고침할 때 5분 이상 지난 자료를 갱신합니다.</p>
+              <Notice tone={bootstrap.academic_link?.state === "error" ? "error" : "info"}>
+                {bootstrap.academic_link?.state === "error" ? `학적 자료를 갱신하지 못했습니다. 마지막으로 연결한 자료를 유지합니다. (${bootstrap.academic_link.error_code || "연결 확인 필요"})` : bootstrap.academic_link?.configured ? "학적 통합 원장에 연결되어 있습니다." : "학적 원장 연결 설정이 필요합니다."}
+              </Notice>
+              {bootstrap.academic_link?.synced_at ? <p className="body-copy">최근 반영: {formatUpdatedAt(bootstrap.academic_link.synced_at)} · {bootstrap.academic_link.academic_year}학년도 {bootstrap.academic_link.semester}학기</p> : null}
+              <div className="metric-grid compact">{[["classes", "학급", "개"], ["students", "학생", "명"], ["subjects", "교과목", "개"], ["enrollments", "선택과목 등록", "건"]].map(([key, label, unit]) => <article key={key}><span>{label}</span><strong>{bootstrap.academic_link?.counts?.[key] || 0}<small>{unit}</small></strong></article>)}</div>
+              {bootstrap.academic_link?.warnings?.unreviewed_choices ? <Notice tone="error">학적 통합에서 과목 확인이 필요한 {bootstrap.academic_link.warnings.unreviewed_choices}건은 자동 배정에서 제외했습니다. 학적 통합에서 확인한 뒤 다시 동기화하세요.</Notice> : null}
+              <p className="body-copy">학생 정보를 바꾸려면 학적 통합에서 수정하세요. 결시·제출·자리배치·시험 시간표는 고사 통합에 보존됩니다. 학적의 분반은 시험 호실로 지정되지 않으며, 시험 호실은 고사 통합에서 입력합니다.</p>
+            </article>
+          ) : null}
           {active === "access-users" ? (
             <article className="panel-card access-users-panel">
               <div className="card-heading">

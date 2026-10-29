@@ -8,6 +8,8 @@ When implementing from a selected generated mock, treat that image as the source
 
 ## Product decisions
 
+- Student/class rosters, subject catalogs, electives and academic sections come from the school's academic-integration ledger. Synchronization is one-way and preserves exam student IDs, historical records, and separately managed exam rooms and schedules. Source location stays in private backend properties.
+
 - Build an independent Korean school exam-management app grounded in the captured `hirame-ki.github.io/exam` desktop flow.
 - Use the source navy/gold visual language, Pretendard UI text, and a Korean serif display face.
 - Fix the source's mobile horizontal overflow with a single-column responsive layout and horizontally scrollable navigation.

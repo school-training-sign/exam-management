@@ -42,6 +42,7 @@ const SESSION_CODES = new Set([
   "PACKAGING_LINK_EXPIRED",
 ]);
 const DEMO_ADMIN_ACTIONS = new Set([
+  "sync_academic_data",
   "get_admin_bootstrap",
   "get_hq_status",
   "get_period_report",
@@ -530,6 +531,9 @@ export class DemoRepository {
         return this.teacherBootstrap();
 
       case "get_admin_bootstrap":
+        return this.adminBootstrap();
+
+      case "sync_academic_data":
         return this.adminBootstrap();
 
       case "save_access_user": {
@@ -1501,6 +1505,7 @@ export class DemoRepository {
       enrollments: structuredClone(this.state.enrollments),
       seat_charts: structuredClone(this.state.seatCharts),
       access_users: this.accessUsers.map(publicAccessUser),
+      academic_link: { configured: true, state: "connected", academic_year: 2026, semester: 1, synced_at: new Date().toISOString(), counts: { classes: this.state.classes.length, students: this.state.students.length, enrollments: this.state.enrollments.length, subjects: Object.values(this.state.subjectCatalog).reduce((sum, names) => sum + names.length, 0) }, warnings: { unreviewed_choices: 0 } },
     };
   }
 }
