@@ -2880,12 +2880,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                     <summary>등록 결과 상세 보기</summary>
                     <div className="table-wrap">
                       <table>
-                        <thead><tr><th>과목</th><th>학급</th><th>번호</th><th>이름</th><th>호실</th></tr></thead>
+                        <thead><tr><th>과목</th><th>학급</th><th>번호</th><th>이름</th><th>학적 분반</th><th>시험 호실</th></tr></thead>
                         <tbody>{enrollmentRows.map((item) => {
                           const student = bootstrap.students.find((row) => String(row.id) === String(item.student_id));
                           const classInfo = bootstrap.classes.find((row) => String(row.id) === String(item.class_id));
                           const defaultRoom = bootstrap.timetable.find((row) => Number(row.grade) === Number(item.grade) && row.subject_name === item.subject_name)?.room_name;
-                          return <tr key={item.id || `${item.student_id}-${item.subject_name}`}><td>{item.subject_name}</td><td>{classLabel(classInfo)}</td><td>{student?.number}</td><td>{student?.name}</td><td>{item.room_name || defaultRoom || "미지정"}</td></tr>;
+                          return <tr key={item.id || `${item.student_id}-${item.subject_name}`}><td>{item.subject_name}</td><td>{classLabel(classInfo)}</td><td>{student?.number}</td><td>{student?.name}</td><td>{item.section_name || "미지정"}</td><td>{item.room_name || defaultRoom || "미지정"}</td></tr>;
                         })}</tbody>
                       </table>
                     </div>
