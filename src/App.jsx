@@ -175,8 +175,8 @@ function noticeDraftFrom(bootstrap = EMPTY_BOOTSTRAP) {
   const source = bootstrap.exam_notice || {};
   const schoolName = bootstrap.settings?.school_name || OFFICIAL_SCHOOL_NAME;
   return {
-    year: source.year || Number(String(bootstrap.exam_dates?.[0]?.exam_date || "").slice(0, 4)) || new Date().getFullYear(),
-    semester: source.semester || 1,
+    year: source.year || bootstrap.academic_link?.target_year || bootstrap.academic_link?.academic_year || Number(String(bootstrap.exam_dates?.[0]?.exam_date || "").slice(0, 4)) || new Date().getFullYear(),
+    semester: source.semester || bootstrap.academic_link?.target_semester || bootstrap.academic_link?.semester || (new Date().getMonth() < 2 || new Date().getMonth() >= 7 ? 2 : 1),
     exam_name: source.exam_name || "",
     greeting: source.greeting || "",
     notes: Array.isArray(source.notes) ? source.notes.join("\n") : String(source.notes || ""),
@@ -1117,6 +1117,7 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         .filter(Boolean),
     );
     return students.filter((student) => {
+      if (applicable.size && !applicable.has(String(student.class_id))) return false;
       if (selectedTimetable.subject_type === "common") {
         return !applicable.size || applicable.has(String(student.class_id));
       }
@@ -1406,6 +1407,8 @@ function SeatPanel({ bootstrap, onBootstrap }) {
         const timetableItem = subjectMap.get(item.subject_name);
         const student = studentMap.get(String(item.student_id));
         if (!student) return;
+        const applicable = classIdsFrom(timetableItem.class_ids);
+        if (applicable.length && !applicable.includes(String(student.class_id))) return;
         const effectiveRoom = resolveStudentRoom({
           studentId: student.id,
           subjectName: item.subject_name,
@@ -2010,6 +2013,7 @@ function defaultPackagingRows() {
 }
 
 function SetupPanel({ bootstrap, onBootstrap }) {
+  const academicManaged = bootstrap.academic_link?.configured === true;
   const [active, setActive] = useState("access-users");
   const [academicSyncing, setAcademicSyncing] = useState(false);
   const [newDate, setNewDate] = useState("");
@@ -2051,8 +2055,8 @@ function SetupPanel({ bootstrap, onBootstrap }) {
   const subjectFileRef = useRef(null);
 
   useEffect(() => {
-    if (!selectedClassId && bootstrap.classes.length) setSelectedClassId(bootstrap.classes[0].id);
-    if (!personalStudentId && bootstrap.students.length) setPersonalStudentId(bootstrap.students[0].id);
+    if (!bootstrap.classes.some((item) => String(item.id) === String(selectedClassId))) setSelectedClassId(selectFirst(bootstrap.classes));
+    if (!bootstrap.students.some((item) => String(item.id) === String(personalStudentId))) setPersonalStudentId(selectFirst(bootstrap.students));
     if (!timetableDraft.exam_date && bootstrap.exam_dates.length) {
       setTimetableDraft((value) => ({ ...value, exam_date: bootstrap.exam_dates[0].exam_date }));
     }
@@ -2096,7 +2100,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     setError("");
     try {
       const result = await apiRequest(action, payload);
-      onBootstrap({ ...bootstrap, ...result });
+      onBootstrap((current) => ({ ...current, ...result }));
       setMessage(success);
       return result;
     } catch (nextError) {
@@ -2107,7 +2111,10 @@ function SetupPanel({ bootstrap, onBootstrap }) {
 
   async function syncAcademicRoster() {
     setAcademicSyncing(true);
-    try { await commit("sync_academic_data", {}, "학적 통합의 학생 명단과 선택과목을 반영했습니다."); }
+    try {
+      const result = await commit("sync_academic_data", {}, "학적 통합의 학생 명단과 선택과목을 반영했습니다.");
+      if (!result) onBootstrap((current) => ({ ...current, academic_link: { ...current.academic_link, state: "error", attempted_at: new Date().toISOString() } }));
+    }
     finally { setAcademicSyncing(false); }
   }
 
@@ -2524,6 +2531,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
     if (!notice.exam_name) return setError("고사명을 입력하세요.");
     if (!notice.issue_date) return setError("발행일을 선택하세요.");
     if (!notice.issuer) return setError("발행 명의를 입력하세요.");
+    if (academicManaged && bootstrap.academic_link?.synced_at && (Number(bootstrap.academic_link.academic_year) !== notice.year || Number(bootstrap.academic_link.semester) !== notice.semester) && !window.confirm("학적 연결 학년도·학기가 바뀝니다. 저장 후 ‘학적 통합 연결 → 지금 동기화’를 완료해야 고사 입력을 계속할 수 있습니다. 변경할까요?")) return;
     const result = await commit("save_exam_notice_settings", { notice }, success);
     if (result) setExamNoticeDraft({ ...notice, notes: notice.notes.join("\n") });
   }
@@ -2692,11 +2700,12 @@ function SetupPanel({ bootstrap, onBootstrap }) {
               </div>
               <p className="body-copy">학적 통합의 학급·학생 명단·교육과정·선택과목·분반을 함께 사용합니다. 고사 정보의 학년도와 학기를 기준으로 연결하며, 다시 접속하거나 새로고침할 때 5분 이상 지난 자료를 갱신합니다.</p>
               <Notice tone={bootstrap.academic_link?.state === "error" ? "error" : "info"}>
-                {bootstrap.academic_link?.state === "error" ? `학적 자료를 갱신하지 못했습니다. 마지막으로 연결한 자료를 유지합니다. (${bootstrap.academic_link.error_code || "연결 확인 필요"})` : bootstrap.academic_link?.configured ? "학적 통합 원장에 연결되어 있습니다." : "학적 원장 연결 설정이 필요합니다."}
+                {bootstrap.academic_link?.state === "error" ? `최근 동기화가 완료되지 않았습니다. 현재 반영 상태를 다시 확인하세요. (${bootstrap.academic_link.error_code || "재확인 필요"})` : bootstrap.academic_link?.period_mismatch || bootstrap.academic_link?.state === "stale" ? "학년도·학기가 바뀌어 이전 기간 자료가 표시됩니다. 지금 동기화를 완료하세요." : bootstrap.academic_link?.state === "connected" ? "학적 통합 자료를 반영했습니다." : bootstrap.academic_link?.configured ? "학적 자료의 최신 반영을 기다리고 있습니다. 지금 동기화를 눌러 주세요." : "학적 원장 연결 설정이 필요합니다."}
               </Notice>
               {bootstrap.academic_link?.synced_at ? <p className="body-copy">최근 반영: {formatUpdatedAt(bootstrap.academic_link.synced_at)} · {bootstrap.academic_link.academic_year}학년도 {bootstrap.academic_link.semester}학기</p> : null}
-              <div className="metric-grid compact">{[["classes", "학급", "개"], ["students", "학생", "명"], ["subjects", "교과목", "개"], ["enrollments", "선택과목 등록", "건"]].map(([key, label, unit]) => <article key={key}><span>{label}</span><strong>{bootstrap.academic_link?.counts?.[key] || 0}<small>{unit}</small></strong></article>)}</div>
-              {bootstrap.academic_link?.warnings?.unreviewed_choices ? <Notice tone="error">학적 통합에서 과목 확인이 필요한 {bootstrap.academic_link.warnings.unreviewed_choices}건은 자동 배정에서 제외했습니다. 학적 통합에서 확인한 뒤 다시 동기화하세요.</Notice> : null}
+              <div className="metric-grid compact">{[["classes", "학급", "개"], ["students", "학생", "명"], ["subjects", "교과목", "개"], ["enrollments", "선택과목 등록", "건"]].map(([key, label, unit]) => <article key={key}><span>{label}</span><strong>{bootstrap.academic_link?.counts?.[key] ?? "—"}<small>{unit}</small></strong></article>)}</div>
+              {bootstrap.academic_link?.warnings?.ambiguous_sections ? <Notice tone="error">분반 연결이 중복된 {bootstrap.academic_link.warnings.ambiguous_sections}건은 분반을 확정하지 않았습니다. 학적 통합의 분반을 확인하세요.</Notice> : null}
+              {bootstrap.academic_link?.warnings?.unreviewed_choices ? <Notice tone="error">이전 반영 자료에 과목 확인이 필요한 {bootstrap.academic_link.warnings.unreviewed_choices}건이 있었습니다. 학적 통합에서 확인한 뒤 다시 동기화하세요.</Notice> : null}
               <p className="body-copy">학생 정보를 바꾸려면 학적 통합에서 수정하세요. 결시·제출·자리배치·시험 시간표는 고사 통합에 보존됩니다. 학적의 분반은 시험 호실로 지정되지 않으며, 시험 호실은 고사 통합에서 입력합니다.</p>
             </article>
           ) : null}
@@ -2758,15 +2767,15 @@ function SetupPanel({ bootstrap, onBootstrap }) {
           {active === "classes" ? (
             <article className="panel-card">
               <div className="card-heading"><div><IconUsers size={20} /><h3>학급과 학생 명단</h3></div><button className="button button-light" onClick={() => downloadWorkbook("학생 명단 등록 양식", { 학생명단: [["학년", "반", "번호", "이름"], [1, 1, 1, "홍길동"]] })}><IconDownload size={17} /> 양식</button></div>
-              <div className="inline-form">
+              <fieldset disabled={academicManaged} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><div className="inline-form">
                 <label>학년<input type="number" min="1" max="9" value={grade} onChange={(event) => setGrade(event.target.value)} /></label>
                 <label>반<input type="number" min="1" value={classNum} onChange={(event) => setClassNum(event.target.value)} /></label>
                 <button className="button button-secondary" onClick={addClass}><IconPlus size={17} /> 학급 추가</button>
                 <button className="button button-light" onClick={() => studentFileRef.current?.click()}><IconUpload size={17} /> 엑셀 가져오기</button>
                 <input ref={studentFileRef} className="sr-only" type="file" accept=".xlsx,.xls" onChange={(event) => importStudentFile(event.target.files?.[0])} />
-              </div>
+              </div></fieldset>
               <div className="class-chips">{bootstrap.classes.map((item) => <button key={item.id} className={selectedClassId === item.id ? "active" : ""} onClick={() => setSelectedClassId(item.id)}>{classLabel(item)}</button>)}</div>
-              {selectedClassId ? <>
+              {selectedClassId ? <fieldset disabled={academicManaged} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
                 <label className="stacked-label">학생 명단 <span>한 줄에 ‘번호 이름’ 형식</span>
                   <textarea rows="10" value={studentText} onChange={(event) => setStudentText(event.target.value)} placeholder={"1 홍길동\n2 김한양"} />
                 </label>
@@ -2795,7 +2804,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
                     })}
                   </div>
                 </div>
-              </> : null}
+              </fieldset> : null}
             </article>
           ) : null}
 
@@ -2816,7 +2825,7 @@ function SetupPanel({ bootstrap, onBootstrap }) {
               <div className="form-grid">
                 <label>고사일<select value={timetableDraft.exam_date} onChange={(event) => setTimetableDraft({ ...timetableDraft, exam_date: event.target.value })}>{bootstrap.exam_dates.map((item) => <option key={item.id} value={item.exam_date}>{item.label} · {formatKoreanDate(item.exam_date)}</option>)}</select></label>
                 <label>학년<input type="number" min="1" value={timetableDraft.grade} onChange={(event) => setTimetableDraft({ ...timetableDraft, grade: event.target.value })} /></label>
-                <label>교시<select value={timetableDraft.period} onChange={(event) => setTimetableDraft({ ...timetableDraft, period: event.target.value })}>{PERIODS.map((item) => <option key={item}>{item}교시</option>)}</select></label>
+                <label>교시<select value={timetableDraft.period} onChange={(event) => setTimetableDraft({ ...timetableDraft, period: event.target.value })}>{PERIODS.map((item) => <option key={item} value={item}>{item}교시</option>)}</select></label>
                 <label>시작<input type="time" value={timetableDraft.start_time} onChange={(event) => setTimetableDraft({ ...timetableDraft, start_time: event.target.value })} /></label>
                 <label>종료<input type="time" value={timetableDraft.end_time} onChange={(event) => setTimetableDraft({ ...timetableDraft, end_time: event.target.value })} /></label>
                 <label>구분<select value={timetableDraft.subject_type} onChange={(event) => setTimetableDraft({ ...timetableDraft, subject_type: event.target.value })}><option value="common">공통과목</option><option value="elective">선택과목</option></select></label>
@@ -3058,12 +3067,20 @@ export function App() {
   const [startupError, setStartupError] = useState("");
   const [presence, setPresence] = useState({ status: "connecting", onlineCount: 0 });
   const lastActivityAtRef = useRef(Date.now());
+  const bootstrapGenerationRef = useRef(0);
+  const updateBootstrap = useCallback((value) => {
+    bootstrapGenerationRef.current += 1;
+    setBootstrap(value);
+  }, []);
 
   useEffect(() => {
     if (!loggedIn) return;
+    let cancelled = false;
+    const generation = bootstrapGenerationRef.current;
     apiRequest(admin ? "get_admin_bootstrap" : "get_bootstrap")
-      .then((value) => setBootstrap((current) => ({ ...current, ...value })))
+      .then((value) => { if (!cancelled && generation === bootstrapGenerationRef.current) setBootstrap((current) => ({ ...current, ...value })); })
       .catch((error) => {
+        if (cancelled || generation !== bootstrapGenerationRef.current) return;
         setStartupError(messageFrom(error));
         if (error?.code === "ADMIN_SESSION_EXPIRED") {
           setAdmin(false);
@@ -3073,10 +3090,12 @@ export function App() {
           clearSessions(); setLoggedIn(false); setAdmin(false);
         }
       });
+    return () => { cancelled = true; };
   }, [loggedIn, admin]);
 
   useEffect(() => {
     const handleExpired = (event) => {
+      bootstrapGenerationRef.current += 1;
       if (event.detail?.code === "ADMIN_SESSION_EXPIRED") {
         setAdmin(false);
         setActiveTab("absence");
@@ -3204,6 +3223,7 @@ export function App() {
   }
 
   function logout() {
+    bootstrapGenerationRef.current += 1;
     apiRequest("logout").catch(() => {});
     clearSessions();
     setLoggedIn(false);
@@ -3220,14 +3240,14 @@ export function App() {
     return (
       <LoginScreen
         onLogin={(value) => {
-          setBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
+          updateBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
           setAdmin(false);
           setActiveTab("absence");
           setStartupError("");
           setLoggedIn(true);
         }}
         onAdminEntry={(value) => {
-          setBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
+          updateBootstrap({ ...EMPTY_BOOTSTRAP, ...value });
           setAdmin(true);
           setActiveTab("settings");
           setStartupError("");
@@ -3298,8 +3318,8 @@ export function App() {
         <Notice tone="error">{startupError}</Notice>
         {activeTab === "absence" ? <AbsencePanel bootstrap={bootstrap} /> : null}
         {activeTab === "hq" && admin ? <HqPanel bootstrap={bootstrap} /> : null}
-        {activeTab === "seating" && admin ? <SeatPanel bootstrap={bootstrap} onBootstrap={setBootstrap} /> : null}
-        {activeTab === "settings" && admin ? <SetupPanel bootstrap={bootstrap} onBootstrap={setBootstrap} /> : null}
+        {activeTab === "seating" && admin ? <SeatPanel bootstrap={bootstrap} onBootstrap={updateBootstrap} /> : null}
+        {activeTab === "settings" && admin ? <SetupPanel bootstrap={bootstrap} onBootstrap={updateBootstrap} /> : null}
         {activeTab === "packaging" ? <PackagingPanel currentUser={bootstrap.current_user} presence={presence} /> : null}
       </main>
 
@@ -3307,7 +3327,7 @@ export function App() {
         open={adminDialog}
         onClose={() => { setAdminDialog(false); setPendingTab(""); }}
         onUnlock={(result) => {
-          setBootstrap((current) => ({
+          updateBootstrap((current) => ({
             ...current,
             ...result.bootstrap,
             current_user: result.current_user || result.bootstrap?.current_user || current.current_user,

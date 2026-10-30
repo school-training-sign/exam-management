@@ -305,6 +305,7 @@ export class DemoRepository {
   constructor({ now = () => Date.now() } = {}) {
     this.state = createDemoState();
     this.now = now;
+    this.academicSnapshotNotice = { year: Number(this.state.examNotice.year), semester: Number(this.state.examNotice.semester), synced_at: new Date(this.now()).toISOString() };
     this.packagingInvite = {
       enabled: true,
       version: 1,
@@ -534,6 +535,7 @@ export class DemoRepository {
         return this.adminBootstrap();
 
       case "sync_academic_data":
+        this.academicSnapshotNotice = { year: Number(state.examNotice.year), semester: Number(state.examNotice.semester), synced_at: new Date(this.now()).toISOString() };
         return this.adminBootstrap();
 
       case "save_access_user": {
@@ -1156,6 +1158,11 @@ export class DemoRepository {
       }
 
       case "save_timetable": {
+        for (const item of payload.timetable || []) {
+          const start = String(item.start_time || ""), end = String(item.end_time || "");
+          const valid = (value) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+          if ((start || end) && (!valid(start) || !valid(end) || start >= end)) throw new ApiError("종료 시각을 시작 시각보다 늦게 설정하세요.", { code: "INVALID_TIMETABLE_TIME" });
+        }
         const incomingIds = new Set((payload.timetable || []).map((item) => String(item.id)));
         if (state.timetable.some((item) => !incomingIds.has(String(item.id)))) {
           throw new ApiError("시간표 삭제는 삭제 버튼을 사용하세요.", {
@@ -1505,7 +1512,7 @@ export class DemoRepository {
       enrollments: structuredClone(this.state.enrollments),
       seat_charts: structuredClone(this.state.seatCharts),
       access_users: this.accessUsers.map(publicAccessUser),
-      academic_link: { configured: true, state: "connected", academic_year: 2026, semester: 1, synced_at: new Date().toISOString(), counts: { classes: this.state.classes.length, students: this.state.students.length, enrollments: this.state.enrollments.length, subjects: Object.values(this.state.subjectCatalog).reduce((sum, names) => sum + names.length, 0) }, warnings: { unreviewed_choices: 0 } },
+      academic_link: { configured: true, state: this.academicSnapshotNotice.year !== Number(this.state.examNotice.year) || this.academicSnapshotNotice.semester !== Number(this.state.examNotice.semester) ? "stale" : "connected", academic_year: this.academicSnapshotNotice.year, semester: this.academicSnapshotNotice.semester, target_year: Number(this.state.examNotice.year), target_semester: Number(this.state.examNotice.semester), period_mismatch: this.academicSnapshotNotice.year !== Number(this.state.examNotice.year) || this.academicSnapshotNotice.semester !== Number(this.state.examNotice.semester), synced_at: this.academicSnapshotNotice.synced_at, counts: { classes: this.state.classes.length, students: this.state.students.length, enrollments: this.state.enrollments.length, subjects: Object.values(this.state.subjectCatalog).reduce((sum, names) => sum + names.length, 0) }, warnings: { unreviewed_choices: 0, ambiguous_sections: 0 } },
     };
   }
 }

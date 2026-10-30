@@ -2,9 +2,15 @@
 
 ## Final result
 
-LOCAL/DEMO FINAL RESULT: PASSED · SCHOOL APPS SCRIPT DEPLOYMENT PENDING
+LOCAL/DEMO FINAL RESULT: PASSED · AUTHENTICATED PRODUCTION SYNC PENDING
 
 2026-07-23 기준으로 로컬 데모의 데스크톱·390×844 화면, 일반·비밀 링크 원안 포장 흐름, Excel 두 시트와 자동 검증을 통과했다. 학교 Google 계정에서 Apps Script를 갱신·재배포하고 실제 API 연결을 확인한 뒤 운영 배포의 `final result: passed`를 확정한다.
+
+## 2026-10-30 학적 연결 보완 범위
+
+1440×900 및 390×844의 학적 연결·학급 조회·시간표 화면을 로컬 합성 데모에서 확인했다. 연결 모드 명단 편집 비활성화, 숫자 교시 선택과 시간표 저장, 페이지 가로 넘침 없음, 콘솔 오류 없음, 운영 API 요청 없음이 확인됐다. 테스트 선택자 오류가 난 첫 검증기·결과는 비공개 작업 증거에 보존한 뒤 선택자만 고쳐 재검증했다.
+
+프런트 단위 검사와 보안 검사, Node 22.23.4 프로덕션 빌드가 통과했다. 백엔드는 실제 함수에 합성 Sheet·Cache·Lock을 연결해 혼합 조회 차단, 실패·재실패 복구, 중단 표식 복구, 중복 요청과 no-op을 검증했다. 이는 실제 Google 쿼터·25명 운영 부하 또는 운영 명단 반영 완료 증거가 아니다. 현재 변경 범위의 화면 점검 결과는 passed이며 관리자 인증 후 실제 반영 시각·건수 확인은 별도다.
 
 ## Visual truth
 
